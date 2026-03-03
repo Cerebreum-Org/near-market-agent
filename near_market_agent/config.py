@@ -6,24 +6,13 @@ import os
 from dataclasses import dataclass, field
 
 
-def _env_float(name: str, default: float) -> float:
-    """Read float env var with safe fallback."""
+def _env(name: str, default, cast=float):
+    """Read a numeric env var with safe fallback."""
     raw = os.environ.get(name)
     if raw is None:
         return default
     try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    """Read int env var with safe fallback."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
+        return cast(raw)
     except (TypeError, ValueError):
         return default
 
@@ -92,12 +81,12 @@ class Config:
             market_api_key=os.environ.get("NEAR_MARKET_API_KEY", ""),
             anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
             market_base_url=os.environ.get("NEAR_MARKET_URL", "https://market.near.ai"),
-            min_budget_near=_env_float("MIN_BUDGET_NEAR", 1.0),
-            max_concurrent_jobs=_env_int("MAX_CONCURRENT_JOBS", 3),
-            poll_interval_seconds=_env_int("POLL_INTERVAL", 60),
-            bid_confidence_threshold=_env_float("BID_THRESHOLD", 0.6),
+            min_budget_near=_env("MIN_BUDGET_NEAR", 1.0),
+            max_concurrent_jobs=_env("MAX_CONCURRENT_JOBS", 3, int),
+            poll_interval_seconds=_env("POLL_INTERVAL", 60, int),
+            bid_confidence_threshold=_env("BID_THRESHOLD", 0.6),
             model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
-            max_tokens=_env_int("MAX_TOKENS", 4096),
+            max_tokens=_env("MAX_TOKENS", 4096, int),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             verbose=os.environ.get("VERBOSE", "").lower() in ("1", "true", "yes"),
             log_dir=os.environ.get("LOG_DIR", "logs"),

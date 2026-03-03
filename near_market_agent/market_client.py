@@ -69,11 +69,8 @@ class MarketClient:
                 if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF[attempt])
                     continue
-                # Check 4xx/5xx BEFORE checking 204 (204 < 400 so order is fine,
-                # but explicitly: non-retryable errors must raise immediately)
                 if resp.status_code >= 400:
-                    detail = resp.text[:500]
-                    raise MarketAPIError(resp.status_code, detail, str(resp.url))
+                    raise MarketAPIError(resp.status_code, resp.text[:500], str(resp.url))
                 if resp.status_code == 204:
                     return None
                 try:
@@ -81,7 +78,7 @@ class MarketClient:
                 except json.JSONDecodeError:
                     return resp.text
             except MarketAPIError:
-                raise  # Don't catch our own errors in the network handler below
+                raise
             except (
                 httpx.ConnectError,
                 httpx.ReadTimeout,
@@ -104,6 +101,15 @@ class MarketClient:
 
     async def _patch(self, path: str, json: dict | None = None) -> Any:
         return await self._request("PATCH", path, json=json)
+
+    @staticmethod
+    def _parse_list(data: Any, key: str, model_cls: type) -> list:
+        """Parse API responses that may be a bare list or {key: [...]}."""
+        if isinstance(data, list):
+            return [model_cls.model_validate(item) for item in data]
+        if isinstance(data, dict):
+            return [model_cls.model_validate(item) for item in data.get(key, [])]
+        return []
 
     # --- Agent ---
 
@@ -135,11 +141,8 @@ class MarketClient:
         offset: int = 0,
     ) -> list[Job]:
         params: dict[str, Any] = {
-            "status": status,
-            "sort": sort,
-            "order": order,
-            "limit": limit,
-            "offset": offset,
+            "status": status, "sort": sort, "order": order,
+            "limit": limit, "offset": offset,
         }
         if tags:
             params["tags"] = tags
@@ -149,11 +152,11 @@ class MarketClient:
             params["job_type"] = job_type
 
         data = await self._get("/jobs", params=params)
+        # list_jobs has an extra fallback: {"jobs": [...]} or {"data": [...]}
         if isinstance(data, list):
             return [Job.model_validate(j) for j in data]
         if not isinstance(data, dict):
             return []
-        # Some responses wrap in {"jobs": [...]} or {"data": [...]}
         jobs_list = data.get("jobs") or data.get("data") or []
         return [Job.model_validate(j) for j in jobs_list]
 
@@ -176,86 +179,51 @@ class MarketClient:
     ) -> Bid:
         data = await self._post(
             f"/jobs/{job_id}/bids",
-            json={
-                "amount": amount,
-                "eta_seconds": eta_seconds,
-                "proposal": proposal,
-            },
+            json={"amount": amount, "eta_seconds": eta_seconds, "proposal": proposal},
         )
         return Bid.model_validate(data)
 
     async def get_my_bids(self) -> list[Bid]:
-        data = await self._get("/agents/me/bids")
-        if isinstance(data, list):
-            return [Bid.model_validate(b) for b in data]
-        if not isinstance(data, dict):
-            return []
-        return [Bid.model_validate(b) for b in data.get("bids", [])]
+        return self._parse_list(await self._get("/agents/me/bids"), "bids", Bid)
 
     async def get_job_bids(self, job_id: str) -> list[Bid]:
-        data = await self._get(f"/jobs/{job_id}/bids")
-        if isinstance(data, list):
-            return [Bid.model_validate(b) for b in data]
-        if not isinstance(data, dict):
-            return []
-        return [Bid.model_validate(b) for b in data.get("bids", [])]
+        return self._parse_list(await self._get(f"/jobs/{job_id}/bids"), "bids", Bid)
 
     async def withdraw_bid(self, bid_id: str) -> dict:
         return await self._post(f"/bids/{bid_id}/withdraw")
 
     # --- Work Submission ---
 
-    async def submit_deliverable(
-        self,
-        job_id: str,
-        deliverable: str,
-        deliverable_hash: str | None = None,
-    ) -> dict:
+    async def _submit_work(self, path: str, deliverable: str, deliverable_hash: str | None) -> dict:
+        """Shared submission logic for deliverables and competition entries."""
         if not deliverable or not deliverable.strip():
             raise ValueError("Cannot submit empty deliverable")
         body: dict[str, str] = {"deliverable": deliverable}
         if deliverable_hash:
             body["deliverable_hash"] = deliverable_hash
-        return await self._post(f"/jobs/{job_id}/submit", json=body)
+        return await self._post(path, json=body)
+
+    async def submit_deliverable(
+        self, job_id: str, deliverable: str, deliverable_hash: str | None = None,
+    ) -> dict:
+        return await self._submit_work(f"/jobs/{job_id}/submit", deliverable, deliverable_hash)
 
     async def submit_competition_entry(
-        self,
-        job_id: str,
-        deliverable: str,
-        deliverable_hash: str | None = None,
+        self, job_id: str, deliverable: str, deliverable_hash: str | None = None,
     ) -> dict:
-        if not deliverable or not deliverable.strip():
-            raise ValueError("Cannot submit empty competition entry")
-        body: dict[str, str] = {"deliverable": deliverable}
-        if deliverable_hash:
-            body["deliverable_hash"] = deliverable_hash
-        return await self._post(f"/jobs/{job_id}/entries", json=body)
+        return await self._submit_work(f"/jobs/{job_id}/entries", deliverable, deliverable_hash)
 
     # --- Messages ---
 
     async def get_job_messages(self, job_id: str, limit: int = 50) -> list[Message]:
         data = await self._get(f"/jobs/{job_id}/messages", params={"limit": limit})
-        if isinstance(data, list):
-            return [Message.model_validate(m) for m in data]
-        if not isinstance(data, dict):
-            return []
-        return [Message.model_validate(m) for m in data.get("messages", [])]
+        return self._parse_list(data, "messages", Message)
 
-    async def get_assignment_messages(
-        self, assignment_id: str, limit: int = 50
-    ) -> list[Message]:
-        data = await self._get(
-            f"/assignments/{assignment_id}/messages", params={"limit": limit}
-        )
-        if isinstance(data, list):
-            return [Message.model_validate(m) for m in data]
-        if not isinstance(data, dict):
-            return []
-        return [Message.model_validate(m) for m in data.get("messages", [])]
+    async def get_assignment_messages(self, assignment_id: str, limit: int = 50) -> list[Message]:
+        data = await self._get(f"/assignments/{assignment_id}/messages", params={"limit": limit})
+        return self._parse_list(data, "messages", Message)
 
-    async def send_assignment_message(
-        self, assignment_id: str, content: str
-    ) -> Message:
+    async def send_assignment_message(self, assignment_id: str, content: str) -> Message:
         data = await self._post(
             f"/assignments/{assignment_id}/messages",
             json={"content": content},

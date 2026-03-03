@@ -103,5 +103,6 @@ class JobEvaluatorTests(unittest.TestCase):
         response = SimpleNamespace(
             content=[SimpleNamespace(text="first"), SimpleNamespace(text="second"), SimpleNamespace(foo="x")]
         )
-        self.assertEqual(JobEvaluator._extract_text(response), "first\nsecond")
+        from near_market_agent import extract_llm_text
+        self.assertEqual(extract_llm_text(response), "first\nsecond")
 

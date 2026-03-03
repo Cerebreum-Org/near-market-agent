@@ -55,29 +55,36 @@ Description:
 {description}"""
 
 
+def _skip_result(job_id: str, reason: str) -> JobEvaluation:
+    """Create a skip evaluation (score 0, no bid)."""
+    return JobEvaluation(job_id=job_id, score=0.0, should_bid=False, reasoning=reason, category="skip")
+
+
+def _positive_or_none(value, cast=float):
+    """Parse a value to a positive number, returning None on failure or non-positive."""
+    if value is None:
+        return None
+    try:
+        result = cast(value)
+        return result if result > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 class JobEvaluator:
-    """Uses Claude to evaluate jobs and generate bid proposals."""
+    """Uses Claude to assess jobs and generate bid proposals."""
 
     def __init__(self, config: Config):
         self.config = config
         self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
 
     def evaluate_job(self, job: Job) -> JobEvaluation:
-        """Evaluate a single job and return scoring + proposal."""
-        # Quick pre-filter before spending tokens
+        """Assess a single job and return scoring + proposal."""
         preflight = self._preflight_filter(job)
         if preflight:
-            return JobEvaluation(
-                job_id=job.job_id,
-                score=0.0,
-                should_bid=False,
-                reasoning=preflight,
-                category="skip",
-            )
+            return _skip_result(job.job_id, preflight)
 
-        system = EVAL_SYSTEM.format(
-            capabilities=self.config.capabilities.description
-        )
+        system = EVAL_SYSTEM.format(capabilities=self.config.capabilities.description)
         user = EVAL_USER.format(
             title=job.title,
             budget=job.budget_near,
@@ -97,154 +104,96 @@ class JobEvaluator:
 
         text = extract_llm_text(response).strip()
         if not text:
-            return JobEvaluation(
-                job_id=job.job_id,
-                score=0.0,
-                should_bid=False,
-                reasoning="Empty LLM response",
-                category="skip",
-            )
-        # Parse JSON, handling potential markdown fences
+            return _skip_result(job.job_id, "Empty LLM response")
+
+        # Strip markdown fences
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return JobEvaluation(
-                job_id=job.job_id,
-                score=0.0,
-                should_bid=False,
-                reasoning=f"Failed to parse LLM response: {text[:200]}",
-                category="skip",
-            )
+            return _skip_result(job.job_id, f"Failed to parse LLM response: {text[:200]}")
 
-        # Clamp score to valid range
+        # Clamp score to [0, 1]
         try:
             raw_score = float(data.get("score", 0) or 0)
         except (TypeError, ValueError):
             raw_score = 0.0
-        score = max(0.0, min(1.0, raw_score))
-
-        # Validate suggested amounts
-        suggested_bid = data.get("suggested_bid_amount")
-        if suggested_bid is not None:
-            try:
-                suggested_bid = float(suggested_bid)
-                if suggested_bid <= 0:
-                    suggested_bid = None
-            except (TypeError, ValueError):
-                suggested_bid = None
-
-        suggested_eta = data.get("suggested_eta_hours")
-        if suggested_eta is not None:
-            try:
-                suggested_eta = int(suggested_eta)
-                if suggested_eta <= 0:
-                    suggested_eta = None
-            except (TypeError, ValueError):
-                suggested_eta = None
 
         return JobEvaluation(
             job_id=job.job_id,
-            score=score,
+            score=max(0.0, min(1.0, raw_score)),
             should_bid=bool(data.get("should_bid", False)),
             reasoning=str(data.get("reasoning") or ""),
-            suggested_bid_amount=suggested_bid,
-            suggested_eta_hours=suggested_eta,
+            suggested_bid_amount=_positive_or_none(data.get("suggested_bid_amount")),
+            suggested_eta_hours=_positive_or_none(data.get("suggested_eta_hours"), int),
             proposal_draft=str(data.get("proposal_draft") or ""),
             category=str(data.get("category") or "skip"),
         )
 
     def _preflight_filter(self, job: Job) -> str | None:
-        """Fast rule-based filter before LLM eval. Returns skip reason or None."""
-        # Guard against missing/empty fields
+        """Fast rule-based filter before LLM assessment. Returns skip reason or None."""
         if not job.title or not job.description:
             return "Missing title or description"
 
         title_lower = job.title.lower()
         desc_lower = job.description.lower()
 
-        # Already expired
         if job.is_expired:
             return "Job is expired"
 
-        # Budget too low
         if job.budget_near < self.config.min_budget_near:
             return f"Budget too low ({job.budget_near} < {self.config.min_budget_near} NEAR)"
 
-        # Skip video/image/audio creation (plain string match, not regex)
-        multimedia_signals = ["create a video", "record a video", "make a video",
-                            "tiktok video", "youtube video", "record audio",
-                            "voice recording", "short video", "video demo",
-                            "video script"]
+        multimedia_signals = [
+            "create a video", "record a video", "make a video",
+            "tiktok video", "youtube video", "record audio",
+            "voice recording", "short video", "video demo", "video script",
+        ]
         for signal in multimedia_signals:
             if signal in title_lower or signal in desc_lower:
                 return f"Multimedia creation job (matched: {signal})"
 
-        # Skip physical tasks
-        physical_signals = ["pick up", "deliver to", "in-person", "photograph",
-                          "plant a tree", "clean a car"]
+        physical_signals = [
+            "pick up", "deliver to", "in-person", "photograph",
+            "plant a tree", "clean a car",
+        ]
         for signal in physical_signals:
             if signal in title_lower or signal in desc_lower:
                 return f"Physical task (matched: {signal})"
 
-        # Skip social media account management
         if "account growth" in title_lower or "manage account" in title_lower:
             return "Requires social media account access"
 
-        # Nuclear warhead guy and obvious trolls
         if "warhead" in title_lower or "nuclear warhead" in desc_lower:
             return "Obviously harmful/troll job"
 
         return None
 
     def batch_evaluate(self, jobs: list[Job]) -> list[JobEvaluation]:
-        """Evaluate multiple jobs. Uses preflight to minimize LLM calls."""
-        results = []
-        for job in jobs:
-            eval_result = self.evaluate_job(job)
-            results.append(eval_result)
-        return results
+        """Assess multiple jobs sequentially."""
+        return [self.evaluate_job(job) for job in jobs]
 
     async def evaluate_job_async(self, job: Job) -> JobEvaluation:
-        """Run job evaluation off the event loop."""
+        """Run job assessment off the event loop."""
         return await asyncio.to_thread(self.evaluate_job, job)
 
     async def batch_evaluate_async(
         self, jobs: list[Job], max_concurrent: int = 5
     ) -> list[JobEvaluation]:
-        """Evaluate jobs concurrently with a semaphore to avoid rate limits."""
+        """Assess jobs concurrently with a semaphore to avoid rate limits."""
         sem = asyncio.Semaphore(max_concurrent)
 
-        async def _eval(job: Job) -> JobEvaluation:
-            # Preflight runs instantly — no semaphore needed
+        async def _assess(job: Job) -> JobEvaluation:
+            # Preflight runs instantly — skip semaphore for fast rejections
             preflight = self._preflight_filter(job)
             if preflight:
-                return JobEvaluation(
-                    job_id=job.job_id,
-                    score=0.0,
-                    should_bid=False,
-                    reasoning=preflight,
-                    category="skip",
-                )
+                return _skip_result(job.job_id, preflight)
             async with sem:
                 try:
-                    # evaluate_job will re-run preflight (harmless but instant),
-                    # then do the LLM call
                     return await asyncio.to_thread(self.evaluate_job, job)
                 except Exception as e:
-                    # Don't let one failed evaluation crash the whole batch
-                    return JobEvaluation(
-                        job_id=job.job_id,
-                        score=0.0,
-                        should_bid=False,
-                        reasoning=f"Evaluation error: {e}",
-                        category="skip",
-                    )
+                    return _skip_result(job.job_id, f"Assessment error: {e}")
 
-        tasks = [_eval(job) for job in jobs]
-        return list(await asyncio.gather(*tasks))
-
-    # Keep static method as alias for backward compat with tests
-    _extract_text = staticmethod(extract_llm_text)
+        return list(await asyncio.gather(*[_assess(job) for job in jobs]))

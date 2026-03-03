@@ -27,11 +27,7 @@ class AgentLogger:
 
     def _write_log(self, level: str, event: str, **data: object) -> None:
         """Write one structured log entry to the session JSONL file."""
-        entry: dict[str, object] = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "level": level,
-            "event": event,
-        }
+        entry = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "event": event}
         for k, v in data.items():
             try:
                 json.dumps(v)
@@ -77,22 +73,17 @@ class AgentLogger:
         table.add_column("Title", max_width=50)
         table.add_column("Bid?", width=5, justify="center")
 
+        jobs_by_id = {j.job_id: j for j in jobs}
         for ev in sorted(evaluated, key=lambda e: e.score, reverse=True):
             score_color = "green" if ev.score >= 0.6 else "yellow" if ev.score >= 0.3 else "red"
-            bid_icon = "✅" if ev.should_bid else "❌"
-            # Find matching job for budget/bids
-            job = next((j for j in jobs if j.job_id == ev.job_id), None)
-            budget = f"{job.budget_near:.1f}" if job else "?"
-            bids = str(job.bid_count or 0) if job else "?"
-
-            title = job.title[:50] if job else "?"
+            job = jobs_by_id.get(ev.job_id)
             table.add_row(
                 f"[{score_color}]{ev.score:.2f}[/]",
-                f"{budget} NEAR",
-                bids,
+                f"{job.budget_near:.1f} NEAR" if job else "? NEAR",
+                str(job.bid_count or 0) if job else "?",
                 ev.category or "—",
-                title,
-                bid_icon,
+                job.title[:50] if job else "?",
+                "✅" if ev.should_bid else "❌",
             )
 
         console.print(table)

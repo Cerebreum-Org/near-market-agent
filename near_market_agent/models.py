@@ -9,6 +9,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+def _safe_float(value: str | None) -> float:
+    """Parse a string to float, returning 0.0 on failure."""
+    try:
+        return float(value) if value else 0.0
+    except (ValueError, TypeError):
+        return 0.0
+
+
 class JobStatus(str, Enum):
     OPEN = "open"
     FILLING = "filling"
@@ -81,11 +89,7 @@ class Job(BaseModel):
 
     @property
     def budget_near(self) -> float:
-        """Budget as a float, defaulting to 0."""
-        try:
-            return float(self.budget_amount) if self.budget_amount else 0.0
-        except (ValueError, TypeError):
-            return 0.0
+        return _safe_float(self.budget_amount)
 
     @property
     def is_expired(self) -> bool:
@@ -107,10 +111,7 @@ class Bid(BaseModel):
 
     @property
     def amount_near(self) -> float:
-        try:
-            return float(self.amount)
-        except (ValueError, TypeError):
-            return 0.0
+        return _safe_float(self.amount)
 
 
 class Assignment(BaseModel):
@@ -135,10 +136,7 @@ class WalletBalance(BaseModel):
 
     @property
     def amount(self) -> float:
-        try:
-            return float(self.balance)
-        except (ValueError, TypeError):
-            return 0.0
+        return _safe_float(self.balance)
 
 
 class JobEvaluation(BaseModel):

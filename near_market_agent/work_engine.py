@@ -45,111 +45,12 @@ Full Description:
 Produce the complete deliverable now. Be thorough and comprehensive. The quality of your work directly affects your reputation on this marketplace."""
 
 
-class WorkEngine:
-    """Uses Claude to complete jobs and produce deliverables."""
-
-    def __init__(self, config: Config):
-        self.config = config
-        self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
-
-    def complete_job(self, job: Job) -> WorkResult:
-        """Complete a job and return the deliverable content."""
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            system=WORK_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": WORK_USER.format(
-                    title=job.title,
-                    budget=job.budget_near,
-                    tags=", ".join(job.tags) if job.tags else "none",
-                    description=job.description[:8000],
-                ),
-            }],
-        )
-
-        content = extract_llm_text(response)
-        if not content:
-            raise RuntimeError(f"Empty response from LLM for job {job.job_id}")
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
-        tokens = getattr(response, "usage", None)
-        tokens_used = (tokens.input_tokens + tokens.output_tokens) if tokens else 0
-
-        return WorkResult(
-            job_id=job.job_id,
-            content=content,
-            content_hash=f"sha256:{content_hash}",
-            tokens_used=tokens_used,
-            model=self.config.model,
-        )
-
-    def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
-        """Handle a revision request from the requester."""
-        # Truncate original at a line boundary to avoid confusing the LLM
-        truncated_original = _truncate_at_line(original, 4000)
-
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
-            system=WORK_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": WORK_USER.format(
-                        title=job.title,
-                        budget=job.budget_near,
-                        tags=", ".join(job.tags) if job.tags else "none",
-                        description=job.description[:8000],
-                    ),
-                },
-                {
-                    "role": "assistant",
-                    "content": truncated_original,
-                },
-                {
-                    "role": "user",
-                    "content": f"The requester has requested changes:\n\n{feedback}\n\nPlease revise the deliverable accordingly.",
-                },
-            ],
-        )
-
-        content = extract_llm_text(response)
-        if not content:
-            raise RuntimeError(f"Empty revision response from LLM for job {job.job_id}")
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
-        tokens = getattr(response, "usage", None)
-        tokens_used = (tokens.input_tokens + tokens.output_tokens) if tokens else 0
-
-        return WorkResult(
-            job_id=job.job_id,
-            content=content,
-            content_hash=f"sha256:{content_hash}",
-            tokens_used=tokens_used,
-            model=self.config.model,
-        )
-
-    async def complete_job_async(self, job: Job) -> WorkResult:
-        """Run job completion off the event loop."""
-        return await asyncio.to_thread(self.complete_job, job)
-
-    async def handle_revision_async(self, job: Job, original: str, feedback: str) -> WorkResult:
-        """Run revision handling off the event loop."""
-        return await asyncio.to_thread(self.handle_revision, job, original, feedback)
-
-    _extract_text = staticmethod(extract_llm_text)
-
-
 def _truncate_at_line(text: str, max_chars: int) -> str:
     """Truncate text at a newline boundary to avoid splitting mid-line."""
     if len(text) <= max_chars:
         return text
-    # Find the last newline before the limit
     cut = text.rfind("\n", 0, max_chars)
-    if cut == -1:
-        # No newline found — fall back to hard truncation
-        return text[:max_chars]
-    return text[:cut]
+    return text[:cut] if cut != -1 else text[:max_chars]
 
 
 @dataclass
@@ -165,3 +66,67 @@ class WorkResult:
     def preview(self) -> str:
         """First 200 chars of content."""
         return self.content[:200] + ("..." if len(self.content) > 200 else "")
+
+
+class WorkEngine:
+    """Uses Claude to complete jobs and produce deliverables."""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+
+    def _make_result(self, job_id: str, response) -> WorkResult:
+        """Extract content from LLM response and build a WorkResult."""
+        content = extract_llm_text(response)
+        if not content:
+            raise RuntimeError(f"Empty response from LLM for job {job_id}")
+        usage = getattr(response, "usage", None)
+        return WorkResult(
+            job_id=job_id,
+            content=content,
+            content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
+            tokens_used=(usage.input_tokens + usage.output_tokens) if usage else 0,
+            model=self.config.model,
+        )
+
+    def _job_prompt(self, job: Job) -> dict:
+        """Build the user message for a job."""
+        return {
+            "role": "user",
+            "content": WORK_USER.format(
+                title=job.title,
+                budget=job.budget_near,
+                tags=", ".join(job.tags) if job.tags else "none",
+                description=job.description[:8000],
+            ),
+        }
+
+    def complete_job(self, job: Job) -> WorkResult:
+        """Complete a job and return the deliverable content."""
+        response = self.client.messages.create(
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            system=WORK_SYSTEM,
+            messages=[self._job_prompt(job)],
+        )
+        return self._make_result(job.job_id, response)
+
+    def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
+        """Handle a revision request from the requester."""
+        response = self.client.messages.create(
+            model=self.config.model,
+            max_tokens=self.config.max_tokens,
+            system=WORK_SYSTEM,
+            messages=[
+                self._job_prompt(job),
+                {"role": "assistant", "content": _truncate_at_line(original, 4000)},
+                {"role": "user", "content": f"The requester has requested changes:\n\n{feedback}\n\nPlease revise the deliverable accordingly."},
+            ],
+        )
+        return self._make_result(job.job_id, response)
+
+    async def complete_job_async(self, job: Job) -> WorkResult:
+        return await asyncio.to_thread(self.complete_job, job)
+
+    async def handle_revision_async(self, job: Job, original: str, feedback: str) -> WorkResult:
+        return await asyncio.to_thread(self.handle_revision, job, original, feedback)
