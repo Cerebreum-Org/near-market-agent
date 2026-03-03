@@ -28,11 +28,13 @@ class MarketAgent:
 
         # State tracking
         self._seen_jobs: set[str] = set()
-        self._active_bids: dict[str, Bid] = {}  # bid_id -> Bid
-        self._active_jobs: dict[str, Job] = {}   # job_id -> Job (jobs we're working on)
+        self._bid_jobs: set[str] = set()          # job_ids we've already bid on
+        self._active_bids: dict[str, Bid] = {}    # bid_id -> Bid
+        self._active_jobs: dict[str, Job] = {}    # job_id -> Job (jobs we're working on)
         self._completed: set[str] = set()
         self._state_file = Path(config.log_dir) / "agent_state.json"
         self._running = False
+        self._agent_id: str | None = None  # Cached after first auth check
 
     async def run(self):
         """Main agent loop."""
@@ -142,6 +144,7 @@ class MarketAgent:
         """Verify API key works and log identity."""
         try:
             profile = await self.client.get_profile()
+            self._agent_id = profile.agent_id
             balance = await self.client.get_balance()
             self.log.action(
                 f"Authenticated as {profile.handle} "
@@ -161,13 +164,13 @@ class MarketAgent:
                 job_type="standard",
                 sort="budget_amount",
                 order="desc",
-                limit=50,
+                limit=100,
                 offset=offset,
             )
             if not batch:
                 break
             all_jobs.extend(batch)
-            if len(batch) < 50:
+            if len(batch) < 100:
                 break
             offset += 50
             await asyncio.sleep(0.5)  # Rate limit courtesy
@@ -202,7 +205,9 @@ class MarketAgent:
         # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
         bidworthy = sorted(
             [e for e in evaluations
-             if e.should_bid and e.score >= self.config.bid_confidence_threshold],
+             if e.should_bid
+             and e.score >= self.config.bid_confidence_threshold
+             and e.job_id not in self._bid_jobs],
             key=lambda e: e.score,
             reverse=True,
         )
@@ -229,6 +234,17 @@ class MarketAgent:
         eta = (evaluation.suggested_eta_hours or 24) * 3600
         proposal = evaluation.proposal_draft
 
+        if not proposal or not proposal.strip():
+            self.log.warn(
+                f"Empty proposal for {job.title[:40]}, generating fallback",
+                job_id=job.job_id,
+            )
+            proposal = (
+                f"I can complete this job efficiently. My capabilities include "
+                f"{', '.join(self.config.capabilities.skills[:5])}. "
+                f"Estimated delivery: {eta // 3600} hours."
+            )
+
         if self.config.dry_run:
             self.log.decision(
                 f"[DRY RUN] Would bid {amount} NEAR on: {job.title[:60]}",
@@ -246,6 +262,7 @@ class MarketAgent:
                 proposal=proposal,
             )
             self._active_bids[bid.bid_id] = bid
+            self._bid_jobs.add(job.job_id)
             self.log.action(
                 f"📤 Bid placed: {amount} NEAR on \"{job.title[:50]}\"",
                 job_id=job.job_id,
@@ -335,11 +352,27 @@ class MarketAgent:
                             )
                         elif status == "in_progress" and asn.get("deliverable"):
                             # Was submitted but sent back for revisions
+                            assignment_id = asn.get("assignment_id")
+                            feedback = ""
+                            if assignment_id:
+                                try:
+                                    msgs = await self.client.get_assignment_messages(assignment_id, limit=5)
+                                    # Get the most recent message from the requester (not us)
+                                    for msg in reversed(msgs):
+                                        if msg.sender_agent_id != self._agent_id:
+                                            feedback = msg.content
+                                            break
+                                except MarketAPIError:
+                                    pass
+
                             self.log.action(
                                 f"🔄 Revision requested for: {updated.title[:50]}",
                                 job_id=job_id,
+                                feedback=feedback[:200] if feedback else "no feedback found",
                             )
-                            # TODO: read feedback from messages and handle revision
+
+                            if feedback and assignment_id:
+                                await self._do_revision(updated, assignment_id, asn.get("deliverable", ""), feedback)
                         elif status == "disputed":
                             self.log.warn(
                                 f"⚠️ Work DISPUTED on: {updated.title[:50]}",
@@ -385,6 +418,11 @@ class MarketAgent:
                 job_id=job.job_id,
             )
 
+            # Save locally first — if submit fails we don't lose the work
+            deliverable_file = Path(self.config.log_dir) / f"deliverable_{job.job_id[:8]}.md"
+            deliverable_file.write_text(result.content, encoding="utf-8")
+            self.log.info(f"Saved deliverable to {deliverable_file}", job_id=job.job_id)
+
             # Submit the deliverable
             await self.client.submit_deliverable(
                 job_id=job.job_id,
@@ -404,11 +442,50 @@ class MarketAgent:
                 job_id=job.job_id,
             )
 
+    async def _do_revision(self, job: Job, assignment_id: str, original: str, feedback: str):
+        """Handle a revision request — revise and resubmit."""
+        self.log.action(
+            f"📝 Revising: {job.title[:50]}",
+            job_id=job.job_id,
+            feedback=feedback[:200],
+        )
+
+        if self.config.dry_run:
+            self.log.decision(
+                f"[DRY RUN] Would revise and resubmit for: {job.title[:50]}",
+                job_id=job.job_id,
+            )
+            return
+
+        try:
+            result = await self.engine.handle_revision_async(job, original, feedback)
+            self.log.info(
+                f"Revision complete ({result.tokens_used} tokens, {len(result.content)} chars)",
+                job_id=job.job_id,
+            )
+
+            # Save locally before submitting
+            revision_file = Path(self.config.log_dir) / f"revision_{job.job_id[:8]}.md"
+            revision_file.write_text(result.content, encoding="utf-8")
+
+            await self.client.submit_deliverable(
+                job_id=job.job_id,
+                deliverable=result.content,
+                deliverable_hash=result.content_hash,
+            )
+            self.log.action(
+                f"📬 Revised deliverable submitted for: {job.title[:50]}",
+                job_id=job.job_id,
+            )
+        except Exception as e:
+            self.log.error(f"Failed to revise: {e}", job_id=job.job_id)
+
     # --- State persistence ---
 
     def _save_state(self):
         state = {
             "seen_jobs": list(self._seen_jobs),
+            "bid_jobs": list(self._bid_jobs),
             "active_bids": {k: v.model_dump(mode="json") for k, v in self._active_bids.items()},
             "active_jobs": list(self._active_jobs.keys()),
             "completed": list(self._completed),
@@ -424,6 +501,7 @@ class MarketAgent:
             try:
                 state = json.loads(self._state_file.read_text(encoding="utf-8"))
                 self._seen_jobs = set(state.get("seen_jobs", []))
+                self._bid_jobs = set(state.get("bid_jobs", []))
                 self._completed = set(state.get("completed", []))
                 raw_bids = state.get("active_bids", {})
                 if isinstance(raw_bids, dict):
