@@ -27,7 +27,7 @@ class AgentLogger:
 
     def _write_log(self, level: str, event: str, **data: object) -> None:
         """Write one structured log entry to the session JSONL file."""
-        entry = {
+        entry: dict[str, object] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "event": event,

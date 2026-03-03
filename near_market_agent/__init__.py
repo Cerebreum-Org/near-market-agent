@@ -1,6 +1,8 @@
 """Autonomous agent for market.near.ai"""
 __version__ = "0.1.0"
 
+__all__ = ["extract_llm_text", "__version__"]
+
 
 def extract_llm_text(response: object) -> str:
     """Extract text from Anthropic response content blocks.

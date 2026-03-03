@@ -153,8 +153,8 @@ class MarketClient:
             return [Job.model_validate(j) for j in data]
         if not isinstance(data, dict):
             return []
-        # Some responses wrap in {"jobs": [...]}
-        jobs_list = data.get("jobs", data.get("data", []))
+        # Some responses wrap in {"jobs": [...]} or {"data": [...]}
+        jobs_list = data.get("jobs") or data.get("data") or []
         return [Job.model_validate(j) for j in jobs_list]
 
     async def get_job(self, job_id: str) -> Job:

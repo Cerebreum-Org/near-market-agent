@@ -194,7 +194,7 @@ class JobEvaluator:
             return "Requires social media account access"
 
         # Nuclear warhead guy and obvious trolls
-        if "nuclear" in title_lower or "warhead" in title_lower:
+        if "warhead" in title_lower or "nuclear warhead" in desc_lower:
             return "Obviously harmful/troll job"
 
         return None
