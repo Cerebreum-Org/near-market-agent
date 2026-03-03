@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from dataclasses import dataclass
 import anthropic
 
 from .config import Config
@@ -145,22 +146,14 @@ class WorkEngine:
         return "\n".join(parts).strip()
 
 
+@dataclass
 class WorkResult:
     """Result of completing a job."""
-
-    def __init__(
-        self,
-        job_id: str,
-        content: str,
-        content_hash: str,
-        tokens_used: int = 0,
-        model: str = "",
-    ):
-        self.job_id = job_id
-        self.content = content
-        self.content_hash = content_hash
-        self.tokens_used = tokens_used
-        self.model = model
+    job_id: str
+    content: str
+    content_hash: str
+    tokens_used: int = 0
+    model: str = ""
 
     @property
     def preview(self) -> str:

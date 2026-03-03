@@ -24,7 +24,8 @@ class AgentLogger:
         self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self._log_file = self.log_dir / f"agent_{self._session_id}.jsonl"
 
-    def _write_log(self, level: str, event: str, **data):
+    def _write_log(self, level: str, event: str, **data: object) -> None:
+        """Write one structured log entry to the session JSONL file."""
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,
@@ -39,30 +40,30 @@ class AgentLogger:
         with open(self._log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
-    def info(self, msg: str, **data):
+    def info(self, msg: str, **data: object) -> None:
         self._write_log("info", msg, **data)
         if self.verbose:
             console.print(f"[dim]{_ts()}[/] [blue]INFO[/]  {msg}", highlight=False)
 
-    def action(self, msg: str, **data):
+    def action(self, msg: str, **data: object) -> None:
         """Log an agent action (bid, submit, etc.)."""
         self._write_log("action", msg, **data)
         console.print(f"[dim]{_ts()}[/] [green]⚡[/]    {msg}", highlight=False)
 
-    def decision(self, msg: str, **data):
+    def decision(self, msg: str, **data: object) -> None:
         """Log an agent decision."""
         self._write_log("decision", msg, **data)
         console.print(f"[dim]{_ts()}[/] [yellow]🤔[/]    {msg}", highlight=False)
 
-    def warn(self, msg: str, **data):
+    def warn(self, msg: str, **data: object) -> None:
         self._write_log("warn", msg, **data)
         console.print(f"[dim]{_ts()}[/] [yellow]WARN[/]  {msg}", highlight=False)
 
-    def error(self, msg: str, **data):
+    def error(self, msg: str, **data: object) -> None:
         self._write_log("error", msg, **data)
         console.print(f"[dim]{_ts()}[/] [red]ERROR[/] {msg}", highlight=False)
 
-    def scan_results(self, jobs: list, evaluated: list):
+    def scan_results(self, jobs: list, evaluated: list) -> None:
         """Display scan results as a rich table."""
         if not evaluated:
             console.print("[dim]No jobs to display.[/]")
@@ -94,7 +95,7 @@ class AgentLogger:
 
         console.print(table)
 
-    def job_panel(self, title: str, content: str, style: str = "blue"):
+    def job_panel(self, title: str, content: str, style: str = "blue") -> None:
         console.print(Panel(content, title=title, border_style=style))
 
 

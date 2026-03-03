@@ -98,17 +98,21 @@ class MarketAgent:
     async def scan(self) -> tuple[list[Job], list[JobEvaluation]]:
         """One-shot scan: find and evaluate jobs without bidding."""
         async with self.client:
-            jobs = await self._fetch_open_jobs()
-            self.log.info(f"Found {len(jobs)} open jobs")
+            try:
+                jobs = await self._fetch_open_jobs()
+                self.log.info(f"Found {len(jobs)} open jobs")
 
-            evaluations = await self.evaluator.batch_evaluate_async(jobs)
-            self.log.scan_results(jobs, evaluations)
+                evaluations = await self.evaluator.batch_evaluate_async(jobs)
+                self.log.scan_results(jobs, evaluations)
 
-            bidworthy = [e for e in evaluations if e.should_bid]
-            self.log.info(
-                f"Evaluation complete: {len(bidworthy)}/{len(evaluations)} worth bidding on"
-            )
-            return jobs, evaluations
+                bidworthy = [e for e in evaluations if e.should_bid]
+                self.log.info(
+                    f"Evaluation complete: {len(bidworthy)}/{len(evaluations)} worth bidding on"
+                )
+                return jobs, evaluations
+            except MarketAPIError as e:
+                self.log.error(f"Scan failed: {e}")
+                return [], []
 
     async def status(self):
         """Show current agent status."""

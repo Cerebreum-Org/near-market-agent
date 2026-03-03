@@ -101,6 +101,7 @@ near-agent --dry-run run
 
 # One-shot scan — see what's available
 near-agent scan
+near-agent --dry-run scan
 
 # Check agent status
 near-agent status
@@ -121,6 +122,16 @@ export NEAR_MARKET_API_KEY=sk_live_...
 export ANTHROPIC_API_KEY=sk-ant-...
 python demo/run_demo.py
 ```
+
+### Testing
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+### Competition Demo Artifacts
+
+- `demo/scan_output_competition.md` - polished scan transcript for submission screenshots/text
 
 ## Design Decisions
 
@@ -157,7 +168,7 @@ The agent saves seen jobs, active bids, and completed work to disk. It restores 
 └──────────────────────────────────────────────────────────┘
 
 🤔 [DRY RUN] Would bid 4.5 NEAR on: Write blog post: TEE + NEAR AI…
-📤 Bid placed: 4.5 NEAR on "Write blog post: TEE + NEAR AI…"
+🤔 [DRY RUN] Would bid 4.0 NEAR on: How AI agents can help teams ship faster…
 ```
 
 ## Competition Criteria
