@@ -84,12 +84,13 @@ class AgentLogger:
             budget = f"{job.budget_near:.1f}" if job else "?"
             bids = str(job.bid_count or 0) if job else "?"
 
+            title = job.title[:50] if job else "?"
             table.add_row(
                 f"[{score_color}]{ev.score:.2f}[/]",
                 f"{budget} NEAR",
                 bids,
                 ev.category or "—",
-                ev.reasoning[:50] if not ev.should_bid else job.title[:50] if job else "?",
+                title,
                 bid_icon,
             )
 

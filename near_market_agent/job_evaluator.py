@@ -202,9 +202,28 @@ class JobEvaluator:
         """Run job evaluation off the event loop."""
         return await asyncio.to_thread(self.evaluate_job, job)
 
-    async def batch_evaluate_async(self, jobs: list[Job]) -> list[JobEvaluation]:
-        """Run batch evaluation off the event loop."""
-        return await asyncio.to_thread(self.batch_evaluate, jobs)
+    async def batch_evaluate_async(
+        self, jobs: list[Job], max_concurrent: int = 5
+    ) -> list[JobEvaluation]:
+        """Evaluate jobs concurrently with a semaphore to avoid rate limits."""
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _eval(job: Job) -> JobEvaluation:
+            # Preflight runs instantly — no semaphore needed
+            preflight = self._preflight_filter(job)
+            if preflight:
+                return JobEvaluation(
+                    job_id=job.job_id,
+                    score=0.0,
+                    should_bid=False,
+                    reasoning=preflight,
+                    category="skip",
+                )
+            async with sem:
+                return await asyncio.to_thread(self.evaluate_job, job)
+
+        tasks = [_eval(job) for job in jobs]
+        return list(await asyncio.gather(*tasks))
 
     @staticmethod
     def _extract_text(response: object) -> str:

@@ -170,7 +170,9 @@ class MarketAgent:
             if len(batch) < 50:
                 break
             offset += 50
-            if offset > 500:  # Safety cap
+            await asyncio.sleep(0.5)  # Rate limit courtesy
+            if offset > 1000:  # Safety cap — log if we hit it
+                self.log.warn(f"Hit pagination cap at {len(all_jobs)} jobs, some may be missed")
                 break
 
         return all_jobs
@@ -264,8 +266,8 @@ class MarketAgent:
                 for bid in bids:
                     if bid.status == BidStatus.PENDING:
                         self._active_bids[bid.bid_id] = bid
-            except MarketAPIError:
-                pass
+            except MarketAPIError as e:
+                self.log.warn(f"Failed to load existing bids: {e}")
 
         to_remove: list[str] = []
         for bid_id, bid in list(self._active_bids.items()):

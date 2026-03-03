@@ -96,7 +96,7 @@ class WorkEngine:
                         title=job.title,
                         budget=job.budget_near,
                         tags=", ".join(job.tags) if job.tags else "none",
-                        description=job.description[:6000],
+                        description=job.description[:8000],
                     ),
                 },
                 {
