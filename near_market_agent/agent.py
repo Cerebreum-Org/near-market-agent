@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,13 +37,19 @@ class MarketAgent:
         """Main agent loop."""
         self.log.action("🚀 Agent starting up")
         self._load_state()
+        self._running = True
+
+        # Graceful shutdown on SIGINT/SIGTERM
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._shutdown)
 
         async with self.client:
             # Initial status check
             await self._check_identity()
 
             cycle = 0
-            while True:
+            while self._running:
                 cycle += 1
                 self.log.info(f"── Cycle {cycle} ──")
 
@@ -69,7 +76,19 @@ class MarketAgent:
                     active_jobs=len(self._active_jobs),
                     completed=len(self._completed),
                 )
-                await asyncio.sleep(self.config.poll_interval_seconds)
+                try:
+                    await asyncio.sleep(self.config.poll_interval_seconds)
+                except asyncio.CancelledError:
+                    break
+
+            # Clean shutdown
+            self._save_state()
+            self.log.action("🛑 Agent shut down gracefully")
+
+    def _shutdown(self):
+        """Signal handler for graceful shutdown."""
+        self.log.action("Shutdown signal received, finishing current cycle...")
+        self._running = False
 
     async def scan(self) -> tuple[list[Job], list[JobEvaluation]]:
         """One-shot scan: find and evaluate jobs without bidding."""
@@ -163,9 +182,10 @@ class MarketAgent:
         for j in new_jobs:
             self._seen_jobs.add(j.job_id)
 
-        # Bid on worthy jobs
+        # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
         bidworthy = sorted(
-            [e for e in evaluations if e.should_bid],
+            [e for e in evaluations
+             if e.should_bid and e.score >= self.config.bid_confidence_threshold],
             key=lambda e: e.score,
             reverse=True,
         )
@@ -230,7 +250,7 @@ class MarketAgent:
                 pass
 
         to_remove = []
-        for bid_id, bid in self._active_bids.items():
+        for bid_id, bid in list(self._active_bids.items()):
             try:
                 # Re-fetch the job to check assignment status
                 job = await self.client.get_job(bid.job_id)
@@ -267,7 +287,7 @@ class MarketAgent:
     async def _check_active_jobs(self):
         """Check on jobs we're currently working on."""
         to_remove = []
-        for job_id, job in self._active_jobs.items():
+        for job_id, job in list(self._active_jobs.items()):
             try:
                 updated = await self.client.get_job(job_id)
                 if updated.my_assignments:
@@ -280,9 +300,19 @@ class MarketAgent:
                             )
                             self._completed.add(job_id)
                             to_remove.append(job_id)
+                        elif status == "submitted":
+                            # Submitted, waiting for review
+                            self.log.info(
+                                f"⏳ Waiting for review: {updated.title[:50]}",
+                                job_id=job_id,
+                            )
                         elif status == "in_progress" and asn.get("deliverable"):
-                            # Already submitted, waiting for review
-                            pass
+                            # Was submitted but sent back for revisions
+                            self.log.action(
+                                f"🔄 Revision requested for: {updated.title[:50]}",
+                                job_id=job_id,
+                            )
+                            # TODO: read feedback from messages and handle revision
                         elif status == "disputed":
                             self.log.warn(
                                 f"⚠️ Work DISPUTED on: {updated.title[:50]}",

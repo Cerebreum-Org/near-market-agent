@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import httpx
 from typing import Any
 
@@ -9,6 +10,11 @@ from .config import Config
 from .models import (
     AgentProfile, Job, Bid, Message, WalletBalance,
 )
+
+# Retry config
+MAX_RETRIES = 3
+RETRY_BACKOFF = [1, 3, 10]  # seconds
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 class MarketAPIError(Exception):
@@ -46,13 +52,26 @@ class MarketClient:
     # --- Internal ---
 
     async def _request(self, method: str, path: str, **kwargs) -> Any:
-        resp = await self._client.request(method, path, **kwargs)
-        if resp.status_code >= 400:
-            detail = resp.text[:500]
-            raise MarketAPIError(resp.status_code, detail, str(resp.url))
-        if resp.status_code == 204:
-            return None
-        return resp.json()
+        last_error: Exception | None = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = await self._client.request(method, path, **kwargs)
+                if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_BACKOFF[attempt])
+                    continue
+                if resp.status_code >= 400:
+                    detail = resp.text[:500]
+                    raise MarketAPIError(resp.status_code, detail, str(resp.url))
+                if resp.status_code == 204:
+                    return None
+                return resp.json()
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                last_error = e
+                if attempt < MAX_RETRIES - 1:
+                    await asyncio.sleep(RETRY_BACKOFF[attempt])
+                    continue
+                raise MarketAPIError(0, f"Connection failed after {MAX_RETRIES} retries: {e}", path)
+        raise last_error or MarketAPIError(0, "Unknown retry failure", path)
 
     async def _get(self, path: str, params: dict | None = None) -> Any:
         return await self._request("GET", path, params=params)

@@ -67,6 +67,8 @@ class WorkEngine:
             }],
         )
 
+        if not response.content:
+            raise RuntimeError(f"Empty response from LLM for job {job.job_id}")
         content = response.content[0].text
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 

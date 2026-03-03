@@ -129,10 +129,11 @@ class JobEvaluator:
         if job.budget_near < self.config.min_budget_near:
             return f"Budget too low ({job.budget_near} < {self.config.min_budget_near} NEAR)"
 
-        # Skip video/image/audio creation
+        # Skip video/image/audio creation (plain string match, not regex)
         multimedia_signals = ["create a video", "record a video", "make a video",
-                            "tiktok video", "youtube video", "create.*image",
-                            "design.*logo", "record audio", "voice recording"]
+                            "tiktok video", "youtube video", "record audio",
+                            "voice recording", "short video", "video demo",
+                            "video script"]
         for signal in multimedia_signals:
             if signal in title_lower or signal in desc_lower:
                 return f"Multimedia creation job (matched: {signal})"
@@ -145,7 +146,7 @@ class JobEvaluator:
                 return f"Physical task (matched: {signal})"
 
         # Skip social media account management
-        if "account growth" in title_lower or "manage.*account" in title_lower:
+        if "account growth" in title_lower or "manage account" in title_lower:
             return "Requires social media account access"
 
         # Nuclear warhead guy and obvious trolls

@@ -32,8 +32,13 @@ class AgentLogger:
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "event": event,
-            **data,
         }
+        for k, v in data.items():
+            try:
+                json.dumps(v)
+                entry[k] = v
+            except (TypeError, ValueError):
+                entry[k] = str(v)
         with open(self._log_file, "a") as f:
             f.write(json.dumps(entry) + "\n")
 
