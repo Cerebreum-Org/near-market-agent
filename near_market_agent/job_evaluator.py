@@ -54,6 +54,46 @@ Description:
 {description}"""
 
 
+def _extract_json(text: str) -> dict | None:
+    """Extract a JSON object from text that may contain surrounding prose.
+
+    Tries in order:
+    1. Direct parse (pure JSON)
+    2. Markdown fenced block (```json ... ```)
+    3. First { ... } block in the text
+    """
+    text = text.strip()
+
+    # 1. Direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Markdown fences
+    if "```" in text:
+        parts = text.split("```")
+        for part in parts[1::2]:  # odd-indexed parts are inside fences
+            content = part.strip()
+            if content.startswith("json"):
+                content = content[4:].strip()
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError:
+                continue
+
+    # 3. Find first { ... } block (greedy from first { to last })
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 def _skip_result(job_id: str, reason: str) -> JobEvaluation:
     """Create a skip evaluation (score 0, no bid)."""
     return JobEvaluation(job_id=job_id, score=0.0, should_bid=False, reasoning=reason, category="skip")
@@ -102,13 +142,9 @@ class JobEvaluator:
         if not text:
             return _skip_result(job.job_id, "Empty LLM response")
 
-        # Strip markdown fences
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
+        # Extract JSON from response — Claude CLI may include reasoning before/after JSON
+        data = _extract_json(text)
+        if data is None:
             return _skip_result(job.job_id, f"Failed to parse LLM response: {text[:200]}")
 
         # Clamp score to [0, 1]

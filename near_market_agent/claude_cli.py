@@ -1,9 +1,14 @@
-"""Claude CLI wrapper — replaces direct Anthropic API calls with `claude -p`."""
+"""Claude CLI wrapper — replaces direct Anthropic API calls with `claude -p`.
+
+Claude CLI requires a PTY on stdin to avoid hanging, so we allocate one
+via Python's pty module while still capturing stdout via PIPE.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
+import os
+import pty
 import subprocess
 
 
@@ -31,16 +36,30 @@ class ClaudeCLI:
             cmd.extend(["--system-prompt", system])
         cmd.append(prompt)
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minute timeout
-        )
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            raise RuntimeError(f"claude CLI failed (exit {result.returncode}): {stderr}")
-        return result.stdout.strip()
+        # Claude CLI needs a PTY on stdin or it hangs
+        master_fd, slave_fd = pty.openpty()
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=slave_fd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1  # mark as closed
+
+            stdout, stderr = proc.communicate(timeout=300)
+        finally:
+            if slave_fd != -1:
+                os.close(slave_fd)
+            os.close(master_fd)
+
+        if proc.returncode != 0:
+            err = stderr.decode().strip() if stderr else "unknown error"
+            raise RuntimeError(f"claude CLI failed (exit {proc.returncode}): {err}")
+
+        return stdout.decode().strip()
 
     async def _run_async(
         self,
