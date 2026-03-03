@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import anthropic
 
 from .config import Config
 from .models import Job, JobEvaluation
-from . import extract_llm_text
+from .claude_cli import ClaudeCLI
 
 
 EVAL_SYSTEM = """You are an autonomous agent evaluating freelance jobs on market.near.ai.
@@ -76,7 +75,7 @@ class JobEvaluator:
 
     def __init__(self, config: Config):
         self.config = config
-        self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        self.claude = ClaudeCLI(model=config.model)
 
     def evaluate_job(self, job: Job) -> JobEvaluation:
         """Assess a single job and return scoring + proposal."""
@@ -95,14 +94,11 @@ class JobEvaluator:
             description=job.description[:3000],
         )
 
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=1024,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
+        try:
+            text = self.claude.create_message(system=system, user=user, max_tokens=1024).strip()
+        except RuntimeError as e:
+            return _skip_result(job.job_id, f"Claude CLI error: {e}")
 
-        text = extract_llm_text(response).strip()
         if not text:
             return _skip_result(job.job_id, "Empty LLM response")
 

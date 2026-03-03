@@ -77,7 +77,7 @@ class ConfigTests(unittest.TestCase):
         errors = cfg.validate()
 
         self.assertIn("NEAR_MARKET_API_KEY not set", errors)
-        self.assertIn("ANTHROPIC_API_KEY not set", errors)
+        # ANTHROPIC_API_KEY no longer required — using Claude CLI
         self.assertIn("MIN_BUDGET_NEAR must be >= 0", errors)
         self.assertIn("MAX_CONCURRENT_JOBS must be >= 1", errors)
         self.assertIn("POLL_INTERVAL must be >= 1", errors)

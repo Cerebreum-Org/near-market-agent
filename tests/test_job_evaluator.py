@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from near_market_agent.config import Config
 from near_market_agent.job_evaluator import JobEvaluator
@@ -25,29 +25,12 @@ def _job(**overrides):
     return Job(**base)
 
 
-class _FakeMessages:
-    def __init__(self, response):
-        self._response = response
-        self.calls = 0
-
-    def create(self, **kwargs):
-        del kwargs
-        self.calls += 1
-        return self._response
-
-
-class _FakeAnthropicClient:
-    def __init__(self, response):
-        self.messages = _FakeMessages(response)
-
-
 class JobEvaluatorTests(unittest.TestCase):
     def test_preflight_filter_skips_low_budget_without_llm_call(self) -> None:
-        fake_response = SimpleNamespace(content=[SimpleNamespace(text="unused")])
-        fake_client = _FakeAnthropicClient(fake_response)
-        cfg = Config(market_api_key="m", anthropic_api_key="a", min_budget_near=5.0)
+        cfg = Config(market_api_key="m", min_budget_near=5.0)
 
-        with patch("near_market_agent.job_evaluator.anthropic.Anthropic", return_value=fake_client):
+        with patch("near_market_agent.job_evaluator.ClaudeCLI") as MockCLI:
+            mock_claude = MockCLI.return_value
             evaluator = JobEvaluator(cfg)
             result = evaluator.evaluate_job(_job(budget_amount="2.0"))
 
@@ -55,7 +38,7 @@ class JobEvaluatorTests(unittest.TestCase):
         self.assertFalse(result.should_bid)
         self.assertEqual(result.category, "skip")
         self.assertIn("Budget too low", result.reasoning)
-        self.assertEqual(fake_client.messages.calls, 0)
+        mock_claude.create_message.assert_not_called()
 
     def test_evaluate_job_parses_fenced_json_and_normalizes_fields(self) -> None:
         payload = {
@@ -68,11 +51,11 @@ class JobEvaluatorTests(unittest.TestCase):
             "category": "research",
         }
         text = f"```json\n{json.dumps(payload)}\n```"
-        response = SimpleNamespace(content=[SimpleNamespace(text=text)])
-        fake_client = _FakeAnthropicClient(response)
-        cfg = Config(market_api_key="m", anthropic_api_key="a")
+        cfg = Config(market_api_key="m")
 
-        with patch("near_market_agent.job_evaluator.anthropic.Anthropic", return_value=fake_client):
+        with patch("near_market_agent.job_evaluator.ClaudeCLI") as MockCLI:
+            mock_claude = MockCLI.return_value
+            mock_claude.create_message.return_value = text
             evaluator = JobEvaluator(cfg)
             result = evaluator.evaluate_job(_job())
 
@@ -84,13 +67,11 @@ class JobEvaluatorTests(unittest.TestCase):
         self.assertEqual(result.category, "research")
 
     def test_evaluate_job_handles_invalid_json(self) -> None:
-        response = SimpleNamespace(content=[SimpleNamespace(text="not json")])
-        cfg = Config(market_api_key="m", anthropic_api_key="a")
+        cfg = Config(market_api_key="m")
 
-        with patch(
-            "near_market_agent.job_evaluator.anthropic.Anthropic",
-            return_value=_FakeAnthropicClient(response),
-        ):
+        with patch("near_market_agent.job_evaluator.ClaudeCLI") as MockCLI:
+            mock_claude = MockCLI.return_value
+            mock_claude.create_message.return_value = "not json"
             evaluator = JobEvaluator(cfg)
             result = evaluator.evaluate_job(_job())
 
@@ -99,10 +80,23 @@ class JobEvaluatorTests(unittest.TestCase):
         self.assertEqual(result.category, "skip")
         self.assertIn("Failed to parse", result.reasoning)
 
+    def test_evaluate_job_handles_cli_error(self) -> None:
+        cfg = Config(market_api_key="m")
+
+        with patch("near_market_agent.job_evaluator.ClaudeCLI") as MockCLI:
+            mock_claude = MockCLI.return_value
+            mock_claude.create_message.side_effect = RuntimeError("claude CLI failed (exit 1): error")
+            evaluator = JobEvaluator(cfg)
+            result = evaluator.evaluate_job(_job())
+
+        self.assertEqual(result.score, 0.0)
+        self.assertFalse(result.should_bid)
+        self.assertEqual(result.category, "skip")
+        self.assertIn("Claude CLI error", result.reasoning)
+
     def test_extract_text_joins_text_blocks(self) -> None:
         response = SimpleNamespace(
             content=[SimpleNamespace(text="first"), SimpleNamespace(text="second"), SimpleNamespace(foo="x")]
         )
         from near_market_agent import extract_llm_text
         self.assertEqual(extract_llm_text(response), "first\nsecond")
-

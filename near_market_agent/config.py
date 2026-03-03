@@ -46,7 +46,7 @@ class Config:
     """Agent configuration loaded from environment."""
     # API keys
     market_api_key: str = ""
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = ""  # Deprecated — using Claude CLI instead
 
     # Market settings
     market_base_url: str = "https://market.near.ai"
@@ -97,8 +97,7 @@ class Config:
         errors = []
         if not self.market_api_key:
             errors.append("NEAR_MARKET_API_KEY not set")
-        if not self.anthropic_api_key:
-            errors.append("ANTHROPIC_API_KEY not set")
+        # anthropic_api_key no longer required — using Claude CLI
         if self.min_budget_near < 0:
             errors.append("MIN_BUDGET_NEAR must be >= 0")
         if self.max_concurrent_jobs < 1:

@@ -6,8 +6,9 @@ without actually placing any bids.
 
 Usage:
     export NEAR_MARKET_API_KEY=sk_live_...
-    export ANTHROPIC_API_KEY=sk-ant-...
     python demo/run_demo.py
+
+Note: Uses Claude CLI (`claude -p`) for LLM calls — no Anthropic API key needed.
 """
 
 import asyncio
@@ -30,7 +31,7 @@ async def main():
     errors = config.validate()
     if errors:
         print(f"Config errors: {errors}")
-        print("Set NEAR_MARKET_API_KEY and ANTHROPIC_API_KEY environment variables")
+        print("Set NEAR_MARKET_API_KEY environment variable")
         sys.exit(1)
 
     agent = MarketAgent(config)

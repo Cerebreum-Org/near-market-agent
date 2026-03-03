@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from dataclasses import dataclass
-import anthropic
 
 from .config import Config
 from .models import Job
-from . import extract_llm_text
+from .claude_cli import ClaudeCLI
 
 
 WORK_SYSTEM = """You are an autonomous agent completing freelance work on market.near.ai.
@@ -73,57 +72,51 @@ class WorkEngine:
 
     def __init__(self, config: Config):
         self.config = config
-        self.client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        self.claude = ClaudeCLI(model=config.model, max_tokens=config.max_tokens)
 
-    def _make_result(self, job_id: str, response) -> WorkResult:
-        """Extract content from LLM response and build a WorkResult."""
-        content = extract_llm_text(response)
+    def _make_result(self, job_id: str, content: str) -> WorkResult:
+        """Build a WorkResult from raw text content."""
         if not content:
-            raise RuntimeError(f"Empty response from LLM for job {job_id}")
-        usage = getattr(response, "usage", None)
+            raise RuntimeError(f"Empty response from Claude CLI for job {job_id}")
         return WorkResult(
             job_id=job_id,
             content=content,
             content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
-            tokens_used=(usage.input_tokens + usage.output_tokens) if usage else 0,
+            tokens_used=0,  # CLI doesn't report token usage
             model=self.config.model,
         )
 
-    def _job_prompt(self, job: Job) -> dict:
-        """Build the user message for a job."""
-        return {
-            "role": "user",
-            "content": WORK_USER.format(
-                title=job.title,
-                budget=job.budget_near,
-                tags=", ".join(job.tags) if job.tags else "none",
-                description=job.description[:8000],
-            ),
-        }
+    def _job_prompt(self, job: Job) -> str:
+        """Build the user prompt for a job."""
+        return WORK_USER.format(
+            title=job.title,
+            budget=job.budget_near,
+            tags=", ".join(job.tags) if job.tags else "none",
+            description=job.description[:8000],
+        )
 
     def complete_job(self, job: Job) -> WorkResult:
         """Complete a job and return the deliverable content."""
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
+        content = self.claude.create_message(
             system=WORK_SYSTEM,
-            messages=[self._job_prompt(job)],
+            user=self._job_prompt(job),
+            max_tokens=self.config.max_tokens,
         )
-        return self._make_result(job.job_id, response)
+        return self._make_result(job.job_id, content)
 
     def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
         """Handle a revision request from the requester."""
-        response = self.client.messages.create(
-            model=self.config.model,
-            max_tokens=self.config.max_tokens,
+        messages = [
+            {"role": "user", "content": self._job_prompt(job)},
+            {"role": "assistant", "content": _truncate_at_line(original, 4000)},
+            {"role": "user", "content": f"The requester has requested changes:\n\n{feedback}\n\nPlease revise the deliverable accordingly."},
+        ]
+        content = self.claude.create_conversation(
             system=WORK_SYSTEM,
-            messages=[
-                self._job_prompt(job),
-                {"role": "assistant", "content": _truncate_at_line(original, 4000)},
-                {"role": "user", "content": f"The requester has requested changes:\n\n{feedback}\n\nPlease revise the deliverable accordingly."},
-            ],
+            messages=messages,
+            max_tokens=self.config.max_tokens,
         )
-        return self._make_result(job.job_id, response)
+        return self._make_result(job.job_id, content)
 
     async def complete_job_async(self, job: Job) -> WorkResult:
         return await asyncio.to_thread(self.complete_job, job)
