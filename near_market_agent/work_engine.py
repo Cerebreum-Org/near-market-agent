@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import json
 import anthropic
 
 from .config import Config
@@ -67,9 +67,9 @@ class WorkEngine:
             }],
         )
 
-        if not response.content:
+        content = self._extract_text(response)
+        if not content:
             raise RuntimeError(f"Empty response from LLM for job {job.job_id}")
-        content = response.content[0].text
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
         return WorkResult(
@@ -107,7 +107,9 @@ class WorkEngine:
             ],
         )
 
-        content = response.content[0].text
+        content = self._extract_text(response)
+        if not content:
+            raise RuntimeError(f"Empty revision response from LLM for job {job.job_id}")
         content_hash = hashlib.sha256(content.encode()).hexdigest()
 
         return WorkResult(
@@ -117,6 +119,26 @@ class WorkEngine:
             tokens_used=response.usage.input_tokens + response.usage.output_tokens,
             model=self.config.model,
         )
+
+    async def complete_job_async(self, job: Job) -> WorkResult:
+        """Run job completion off the event loop."""
+        return await asyncio.to_thread(self.complete_job, job)
+
+    async def handle_revision_async(self, job: Job, original: str, feedback: str) -> WorkResult:
+        """Run revision handling off the event loop."""
+        return await asyncio.to_thread(self.handle_revision, job, original, feedback)
+
+    @staticmethod
+    def _extract_text(response: object) -> str:
+        blocks = getattr(response, "content", None)
+        if not isinstance(blocks, list):
+            return ""
+        parts: list[str] = []
+        for block in blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "\n".join(parts).strip()
 
 
 class WorkResult:

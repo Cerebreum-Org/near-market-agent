@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import httpx
+import json
 from typing import Any
 
 from .config import Config
@@ -64,8 +65,17 @@ class MarketClient:
                     raise MarketAPIError(resp.status_code, detail, str(resp.url))
                 if resp.status_code == 204:
                     return None
-                return resp.json()
-            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout) as e:
+                try:
+                    return resp.json()
+                except json.JSONDecodeError:
+                    return resp.text
+            except (
+                httpx.ConnectError,
+                httpx.ReadTimeout,
+                httpx.WriteTimeout,
+                httpx.RemoteProtocolError,
+                httpx.PoolTimeout,
+            ) as e:
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF[attempt])
@@ -128,6 +138,8 @@ class MarketClient:
         data = await self._get("/jobs", params=params)
         if isinstance(data, list):
             return [Job.model_validate(j) for j in data]
+        if not isinstance(data, dict):
+            return []
         # Some responses wrap in {"jobs": [...]}
         jobs_list = data.get("jobs", data.get("data", []))
         return [Job.model_validate(j) for j in jobs_list]
@@ -163,12 +175,16 @@ class MarketClient:
         data = await self._get("/agents/me/bids")
         if isinstance(data, list):
             return [Bid.model_validate(b) for b in data]
+        if not isinstance(data, dict):
+            return []
         return [Bid.model_validate(b) for b in data.get("bids", [])]
 
     async def get_job_bids(self, job_id: str) -> list[Bid]:
         data = await self._get(f"/jobs/{job_id}/bids")
         if isinstance(data, list):
             return [Bid.model_validate(b) for b in data]
+        if not isinstance(data, dict):
+            return []
         return [Bid.model_validate(b) for b in data.get("bids", [])]
 
     async def withdraw_bid(self, bid_id: str) -> dict:
@@ -204,6 +220,8 @@ class MarketClient:
         data = await self._get(f"/jobs/{job_id}/messages", params={"limit": limit})
         if isinstance(data, list):
             return [Message.model_validate(m) for m in data]
+        if not isinstance(data, dict):
+            return []
         return [Message.model_validate(m) for m in data.get("messages", [])]
 
     async def get_assignment_messages(
@@ -214,6 +232,8 @@ class MarketClient:
         )
         if isinstance(data, list):
             return [Message.model_validate(m) for m in data]
+        if not isinstance(data, dict):
+            return []
         return [Message.model_validate(m) for m in data.get("messages", [])]
 
     async def send_assignment_message(

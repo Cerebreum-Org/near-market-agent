@@ -32,6 +32,7 @@ class MarketAgent:
         self._active_jobs: dict[str, Job] = {}   # job_id -> Job (jobs we're working on)
         self._completed: set[str] = set()
         self._state_file = Path(config.log_dir) / "agent_state.json"
+        self._running = False
 
     async def run(self):
         """Main agent loop."""
@@ -42,7 +43,11 @@ class MarketAgent:
         # Graceful shutdown on SIGINT/SIGTERM
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, self._shutdown)
+            try:
+                loop.add_signal_handler(sig, self._shutdown)
+            except (NotImplementedError, RuntimeError):
+                # Some runtimes do not support signal handlers on the running loop.
+                pass
 
         async with self.client:
             # Initial status check
@@ -96,7 +101,7 @@ class MarketAgent:
             jobs = await self._fetch_open_jobs()
             self.log.info(f"Found {len(jobs)} open jobs")
 
-            evaluations = self.evaluator.batch_evaluate(jobs)
+            evaluations = await self.evaluator.batch_evaluate_async(jobs)
             self.log.scan_results(jobs, evaluations)
 
             bidworthy = [e for e in evaluations if e.should_bid]
@@ -176,7 +181,7 @@ class MarketAgent:
             return
 
         self.log.info(f"Evaluating {len(new_jobs)} new jobs")
-        evaluations = self.evaluator.batch_evaluate(new_jobs)
+        evaluations = await self.evaluator.batch_evaluate_async(new_jobs)
 
         # Mark all as seen
         for j in new_jobs:
@@ -339,7 +344,7 @@ class MarketAgent:
             return
 
         try:
-            result = self.engine.complete_job(job)
+            result = await self.engine.complete_job_async(job)
             self.log.info(
                 f"Work complete ({result.tokens_used} tokens, {len(result.content)} chars)",
                 job_id=job.job_id,
@@ -374,16 +379,28 @@ class MarketAgent:
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._state_file.write_text(json.dumps(state, indent=2))
+        tmp_path = self._state_file.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        tmp_path.replace(self._state_file)
 
     def _load_state(self):
         if self._state_file.exists():
             try:
-                state = json.loads(self._state_file.read_text())
+                state = json.loads(self._state_file.read_text(encoding="utf-8"))
                 self._seen_jobs = set(state.get("seen_jobs", []))
                 self._completed = set(state.get("completed", []))
+                raw_bids = state.get("active_bids", {})
+                if isinstance(raw_bids, dict):
+                    restored_bids: dict[str, Bid] = {}
+                    for bid_id, bid_data in raw_bids.items():
+                        try:
+                            restored_bids[bid_id] = Bid.model_validate(bid_data)
+                        except Exception:
+                            continue
+                    self._active_bids = restored_bids
                 self.log.info(
                     f"Restored state: {len(self._seen_jobs)} seen, "
+                    f"{len(self._active_bids)} active bids, "
                     f"{len(self._completed)} completed"
                 )
             except (json.JSONDecodeError, KeyError):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import anthropic
 
@@ -93,7 +94,15 @@ class JobEvaluator:
             messages=[{"role": "user", "content": user}],
         )
 
-        text = response.content[0].text.strip()
+        text = self._extract_text(response).strip()
+        if not text:
+            return JobEvaluation(
+                job_id=job.job_id,
+                score=0.0,
+                should_bid=False,
+                reasoning="Empty LLM response",
+                category="skip",
+            )
         # Parse JSON, handling potential markdown fences
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -162,3 +171,24 @@ class JobEvaluator:
             eval_result = self.evaluate_job(job)
             results.append(eval_result)
         return results
+
+    async def evaluate_job_async(self, job: Job) -> JobEvaluation:
+        """Run job evaluation off the event loop."""
+        return await asyncio.to_thread(self.evaluate_job, job)
+
+    async def batch_evaluate_async(self, jobs: list[Job]) -> list[JobEvaluation]:
+        """Run batch evaluation off the event loop."""
+        return await asyncio.to_thread(self.batch_evaluate, jobs)
+
+    @staticmethod
+    def _extract_text(response: object) -> str:
+        """Extract text from Anthropic response content blocks."""
+        blocks = getattr(response, "content", None)
+        if not isinstance(blocks, list):
+            return ""
+        parts: list[str] = []
+        for block in blocks:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "\n".join(parts).strip()

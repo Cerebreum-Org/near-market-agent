@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 
 console = Console(stderr=True)
@@ -39,7 +36,7 @@ class AgentLogger:
                 entry[k] = v
             except (TypeError, ValueError):
                 entry[k] = str(v)
-        with open(self._log_file, "a") as f:
+        with open(self._log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
 
     def info(self, msg: str, **data):

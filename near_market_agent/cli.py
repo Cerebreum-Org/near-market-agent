@@ -28,7 +28,7 @@ def cli(ctx, dry_run: bool, verbose: bool):
 
 
 @cli.command()
-@click.option("--interval", "-i", default=60, help="Poll interval in seconds")
+@click.option("--interval", "-i", default=60, type=click.IntRange(min=1), help="Poll interval in seconds")
 @click.pass_context
 def run(ctx, interval: int):
     """Run the autonomous agent loop."""
@@ -86,10 +86,11 @@ def status(ctx):
 @cli.command()
 @click.argument("job_id")
 @click.option("--amount", "-a", required=True, help="Bid amount in NEAR")
-@click.option("--eta", "-e", default=24, help="Estimated hours to complete")
+@click.option("--eta", "-e", default=24, type=click.IntRange(min=1), help="Estimated hours to complete")
 @click.option("--proposal", "-p", help="Proposal text (or auto-generate)")
+@click.option("--force", is_flag=True, help="Bypass bid-confidence threshold check")
 @click.pass_context
-def bid(ctx, job_id: str, amount: str, eta: int, proposal: str | None):
+def bid(ctx, job_id: str, amount: str, eta: int, proposal: str | None, force: bool):
     """Place a bid on a specific job."""
     config: Config = ctx.obj["config"]
 
@@ -106,21 +107,37 @@ def bid(ctx, job_id: str, amount: str, eta: int, proposal: str | None):
             console.print(f"[bold]{job.title}[/]")
             console.print(f"Budget: {job.budget_near} NEAR | Bids: {job.bid_count}")
 
+            try:
+                amount_value = float(amount)
+            except (TypeError, ValueError):
+                raise click.ClickException("Amount must be a valid number")
+
+            if amount_value <= 0:
+                raise click.ClickException("Amount must be greater than 0")
+
+            ev = await agent.evaluator.evaluate_job_async(job)
+            if ev.score < config.bid_confidence_threshold and not force:
+                raise click.ClickException(
+                    f"Job score {ev.score:.2f} is below BID_THRESHOLD "
+                    f"({config.bid_confidence_threshold:.2f}). Use --force to override."
+                )
+
             if not proposal:
-                # Auto-generate proposal
-                ev = agent.evaluator.evaluate_job(job)
                 final_proposal = ev.proposal_draft
                 console.print(f"\n[dim]Auto-generated proposal:[/]\n{final_proposal[:500]}")
             else:
                 final_proposal = proposal
 
+            if not final_proposal.strip():
+                raise click.ClickException("Proposal cannot be empty")
+
             if config.dry_run:
-                console.print(f"\n[yellow]DRY RUN — would bid {amount} NEAR[/]")
+                console.print(f"\n[yellow]DRY RUN — would bid {amount_value} NEAR[/]")
                 return
 
             bid_result = await agent.client.place_bid(
                 job_id=job_id,
-                amount=amount,
+                amount=str(amount_value),
                 eta_seconds=eta * 3600,
                 proposal=final_proposal,
             )
@@ -148,7 +165,7 @@ def work(ctx, job_id: str):
             job = await agent.client.get_job(job_id)
             console.print(f"[bold]Working on: {job.title}[/]")
 
-            result = agent.engine.complete_job(job)
+            result = await agent.engine.complete_job_async(job)
             console.print(f"\n[dim]Produced {len(result.content)} chars ({result.tokens_used} tokens)[/]")
             console.print(f"\n{result.content[:1000]}")
 

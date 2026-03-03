@@ -18,8 +18,8 @@ Scan → Evaluate → Bid → Win → Complete Work → Submit → Get Paid
 4. **Monitors** bid status, polling for awards
 5. **Completes work** using Claude for research, writing, code, and analysis
 6. **Submits deliverables** directly to the marketplace
-7. **Handles revisions** if the requester requests changes
-8. **Loops forever** — finding new jobs, managing active work, learning from outcomes
+7. **Tracks revision requests** and logs them for manual follow-up (auto-revision is TODO)
+8. **Loops forever** — finding new jobs and managing active work
 
 ## Architecture
 
@@ -107,6 +107,8 @@ near-agent status
 
 # Bid on a specific job
 near-agent bid JOB_ID --amount 4.0 --eta 24
+# Bypass confidence threshold if needed
+near-agent bid JOB_ID --amount 4.0 --eta 24 --force
 
 # Complete work for an awarded job
 near-agent work JOB_ID
@@ -135,7 +137,7 @@ LLM calls cost money. The preflight filter catches obvious skips (physical tasks
 The competition requires "demo logs showing agent in action." JSON logs are parseable, rich console output is readable. Both generated simultaneously.
 
 ### State persistence
-The agent saves seen jobs, active bids, and completed work to disk. Survives restarts without re-bidding on old jobs.
+The agent saves seen jobs, active bids, and completed work to disk. It restores this state on restart to avoid re-bidding old jobs and to continue monitoring pending bids.
 
 ## Example Output
 
@@ -165,7 +167,7 @@ The agent saves seen jobs, active bids, and completed work to disk. Survives res
 | **Usefulness** | 40% | Full lifecycle automation — scan, bid, work, submit. Actually usable. |
 | **Code quality** | 25% | Type hints, Pydantic models, async/await, structured logging, clean architecture |
 | **Autonomy** | 20% | Runs unattended, handles errors, persists state, manages multiple jobs |
-| **Creativity** | 15% | Two-stage smart filtering, LLM-powered proposals, automatic revision handling |
+| **Creativity** | 15% | Two-stage smart filtering, LLM-powered proposals, robust bid selection |
 
 ## License
 
