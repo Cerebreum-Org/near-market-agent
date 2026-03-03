@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -90,7 +90,8 @@ class Job(BaseModel):
     @property
     def is_expired(self) -> bool:
         if self.expires_at:
-            return datetime.now(self.expires_at.tzinfo) > self.expires_at
+            expires = self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=timezone.utc)
+            return datetime.now(timezone.utc) > expires
         return False
 
 

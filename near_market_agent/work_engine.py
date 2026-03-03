@@ -71,12 +71,14 @@ class WorkEngine:
         if not content:
             raise RuntimeError(f"Empty response from LLM for job {job.job_id}")
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        tokens = getattr(response, "usage", None)
+        tokens_used = (tokens.input_tokens + tokens.output_tokens) if tokens else 0
 
         return WorkResult(
             job_id=job.job_id,
             content=content,
             content_hash=f"sha256:{content_hash}",
-            tokens_used=response.usage.input_tokens + response.usage.output_tokens,
+            tokens_used=tokens_used,
             model=self.config.model,
         )
 
@@ -111,12 +113,14 @@ class WorkEngine:
         if not content:
             raise RuntimeError(f"Empty revision response from LLM for job {job.job_id}")
         content_hash = hashlib.sha256(content.encode()).hexdigest()
+        tokens = getattr(response, "usage", None)
+        tokens_used = (tokens.input_tokens + tokens.output_tokens) if tokens else 0
 
         return WorkResult(
             job_id=job.job_id,
             content=content,
             content_hash=f"sha256:{content_hash}",
-            tokens_used=response.usage.input_tokens + response.usage.output_tokens,
+            tokens_used=tokens_used,
             model=self.config.model,
         )
 

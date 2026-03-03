@@ -64,6 +64,9 @@ class AgentLogger:
 
     def scan_results(self, jobs: list, evaluated: list):
         """Display scan results as a rich table."""
+        if not evaluated:
+            console.print("[dim]No jobs to display.[/]")
+            return
         table = Table(title="Job Scan Results", show_lines=True)
         table.add_column("Score", width=6, justify="center")
         table.add_column("Budget", width=8, justify="right")

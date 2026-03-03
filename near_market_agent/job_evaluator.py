@@ -118,15 +118,41 @@ class JobEvaluator:
                 category="skip",
             )
 
+        # Clamp score to valid range
+        try:
+            raw_score = float(data.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            raw_score = 0.0
+        score = max(0.0, min(1.0, raw_score))
+
+        # Validate suggested amounts
+        suggested_bid = data.get("suggested_bid_amount")
+        if suggested_bid is not None:
+            try:
+                suggested_bid = float(suggested_bid)
+                if suggested_bid <= 0:
+                    suggested_bid = None
+            except (TypeError, ValueError):
+                suggested_bid = None
+
+        suggested_eta = data.get("suggested_eta_hours")
+        if suggested_eta is not None:
+            try:
+                suggested_eta = int(suggested_eta)
+                if suggested_eta <= 0:
+                    suggested_eta = None
+            except (TypeError, ValueError):
+                suggested_eta = None
+
         return JobEvaluation(
             job_id=job.job_id,
-            score=float(data.get("score", 0) or 0),
+            score=score,
             should_bid=bool(data.get("should_bid", False)),
-            reasoning=data.get("reasoning") or "",
-            suggested_bid_amount=data.get("suggested_bid_amount"),
-            suggested_eta_hours=data.get("suggested_eta_hours"),
-            proposal_draft=data.get("proposal_draft") or "",
-            category=data.get("category") or "skip",
+            reasoning=str(data.get("reasoning") or ""),
+            suggested_bid_amount=suggested_bid,
+            suggested_eta_hours=suggested_eta,
+            proposal_draft=str(data.get("proposal_draft") or ""),
+            category=str(data.get("category") or "skip"),
         )
 
     def _preflight_filter(self, job: Job) -> str | None:

@@ -37,8 +37,9 @@ class MarketClient:
             headers={
                 "Authorization": f"Bearer {config.market_api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": "near-market-agent/0.1.0",
             },
-            timeout=30.0,
+            timeout=httpx.Timeout(30.0, connect=10.0),
         )
 
     async def close(self):

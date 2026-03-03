@@ -183,9 +183,15 @@ class MarketAgent:
         self.log.info(f"Evaluating {len(new_jobs)} new jobs")
         evaluations = await self.evaluator.batch_evaluate_async(new_jobs)
 
-        # Mark all as seen
+        # Mark all as seen (cap at 10k to prevent unbounded growth)
         for j in new_jobs:
             self._seen_jobs.add(j.job_id)
+        if len(self._seen_jobs) > 10_000:
+            # Keep only the most recent half
+            excess = len(self._seen_jobs) - 5_000
+            to_discard = list(self._seen_jobs)[:excess]
+            for jid in to_discard:
+                self._seen_jobs.discard(jid)
 
         # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
         bidworthy = sorted(
@@ -205,7 +211,10 @@ class MarketAgent:
         self.log.scan_results(new_jobs, evaluations)
 
         for ev in to_bid:
-            job = next(j for j in new_jobs if j.job_id == ev.job_id)
+            job = next((j for j in new_jobs if j.job_id == ev.job_id), None)
+            if job is None:
+                self.log.warn(f"Evaluated job {ev.job_id} vanished from job list, skipping bid")
+                continue
             await self._place_bid(job, ev)
 
     async def _place_bid(self, job: Job, evaluation: JobEvaluation):
@@ -254,7 +263,7 @@ class MarketAgent:
             except MarketAPIError:
                 pass
 
-        to_remove = []
+        to_remove: list[str] = []
         for bid_id, bid in list(self._active_bids.items()):
             try:
                 # Re-fetch the job to check assignment status
@@ -263,6 +272,13 @@ class MarketAgent:
                 if job.my_assignments:
                     for assignment in job.my_assignments:
                         if assignment.get("status") == "in_progress":
+                            assignment_id = assignment.get("assignment_id")
+                            if not assignment_id:
+                                self.log.warn(
+                                    f"Assignment missing assignment_id for job: {job.title[:50]}",
+                                    job_id=job.job_id,
+                                )
+                                continue
                             self.log.action(
                                 f"🎉 Bid ACCEPTED! Starting work on: {job.title[:50]}",
                                 job_id=job.job_id,
@@ -271,7 +287,7 @@ class MarketAgent:
                             self._active_jobs[job.job_id] = job
                             to_remove.append(bid_id)
                             # Start work immediately
-                            await self._do_work(job, assignment["assignment_id"])
+                            await self._do_work(job, assignment_id)
                             break
 
                 # Check if bid was rejected (job awarded to someone else)
@@ -283,15 +299,15 @@ class MarketAgent:
                         )
                         to_remove.append(bid_id)
 
-            except MarketAPIError:
-                pass
+            except MarketAPIError as e:
+                self.log.warn(f"Failed to check bid {bid_id}: {e}", bid_id=bid_id)
 
         for bid_id in to_remove:
             self._active_bids.pop(bid_id, None)
 
     async def _check_active_jobs(self):
         """Check on jobs we're currently working on."""
-        to_remove = []
+        to_remove: list[str] = []
         for job_id, job in list(self._active_jobs.items()):
             try:
                 updated = await self.client.get_job(job_id)
@@ -323,8 +339,21 @@ class MarketAgent:
                                 f"⚠️ Work DISPUTED on: {updated.title[:50]}",
                                 job_id=job_id,
                             )
-            except MarketAPIError:
-                pass
+                        elif status == "cancelled":
+                            self.log.warn(
+                                f"🚫 Assignment CANCELLED: {updated.title[:50]}",
+                                job_id=job_id,
+                            )
+                            to_remove.append(job_id)
+                elif updated.status.value in ("closed", "expired", "completed"):
+                    # Job disappeared from under us
+                    self.log.warn(
+                        f"Job ended without assignment update ({updated.status.value}): {updated.title[:50]}",
+                        job_id=job_id,
+                    )
+                    to_remove.append(job_id)
+            except MarketAPIError as e:
+                self.log.warn(f"Failed to check job {job_id}: {e}", job_id=job_id)
 
         for job_id in to_remove:
             self._active_jobs.pop(job_id, None)
@@ -375,6 +404,7 @@ class MarketAgent:
         state = {
             "seen_jobs": list(self._seen_jobs),
             "active_bids": {k: v.model_dump(mode="json") for k, v in self._active_bids.items()},
+            "active_jobs": list(self._active_jobs.keys()),
             "completed": list(self._completed),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
