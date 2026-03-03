@@ -86,6 +86,9 @@ class WorkEngine:
 
     def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
         """Handle a revision request from the requester."""
+        # Truncate original at a line boundary to avoid confusing the LLM
+        truncated_original = _truncate_at_line(original, 4000)
+
         response = self.client.messages.create(
             model=self.config.model,
             max_tokens=self.config.max_tokens,
@@ -102,7 +105,7 @@ class WorkEngine:
                 },
                 {
                     "role": "assistant",
-                    "content": original[:4000],
+                    "content": truncated_original,
                 },
                 {
                     "role": "user",
@@ -135,6 +138,18 @@ class WorkEngine:
         return await asyncio.to_thread(self.handle_revision, job, original, feedback)
 
     _extract_text = staticmethod(extract_llm_text)
+
+
+def _truncate_at_line(text: str, max_chars: int) -> str:
+    """Truncate text at a newline boundary to avoid splitting mid-line."""
+    if len(text) <= max_chars:
+        return text
+    # Find the last newline before the limit
+    cut = text.rfind("\n", 0, max_chars)
+    if cut == -1:
+        # No newline found — fall back to hard truncation
+        return text[:max_chars]
+    return text[:cut]
 
 
 @dataclass

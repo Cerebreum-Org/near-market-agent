@@ -32,20 +32,28 @@ class MarketClient:
 
     def __init__(self, config: Config):
         self.config = config
-        self._client = httpx.AsyncClient(
-            base_url=config.api_url,
-            headers={
-                "Authorization": f"Bearer {config.market_api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "near-market-agent/0.1.0",
-            },
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
+        self._client: httpx.AsyncClient | None = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """Lazily create (or recreate) the httpx client."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.config.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.config.market_api_key}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "near-market-agent/0.1.0",
+                },
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+        return self._client
 
     async def close(self):
-        await self._client.aclose()
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def __aenter__(self):
+        self._ensure_client()
         return self
 
     async def __aexit__(self, *args):
@@ -57,7 +65,7 @@ class MarketClient:
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
             try:
-                resp = await self._client.request(method, path, **kwargs)
+                resp = await self._ensure_client().request(method, path, **kwargs)
                 if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF[attempt])
                     continue

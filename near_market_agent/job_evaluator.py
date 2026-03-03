@@ -158,8 +158,16 @@ class JobEvaluator:
 
     def _preflight_filter(self, job: Job) -> str | None:
         """Fast rule-based filter before LLM eval. Returns skip reason or None."""
+        # Guard against missing/empty fields
+        if not job.title or not job.description:
+            return "Missing title or description"
+
         title_lower = job.title.lower()
         desc_lower = job.description.lower()
+
+        # Already expired
+        if job.is_expired:
+            return "Job is expired"
 
         # Budget too low
         if job.budget_near < self.config.min_budget_near:
@@ -222,6 +230,8 @@ class JobEvaluator:
                 )
             async with sem:
                 try:
+                    # evaluate_job will re-run preflight (harmless but instant),
+                    # then do the LLM call
                     return await asyncio.to_thread(self.evaluate_job, job)
                 except Exception as e:
                     # Don't let one failed evaluation crash the whole batch

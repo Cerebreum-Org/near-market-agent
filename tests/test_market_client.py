@@ -14,6 +14,8 @@ from near_market_agent.market_client import MarketAPIError, MarketClient
 class MarketClientTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.client = MarketClient(Config(market_api_key="mk", anthropic_api_key="ak"))
+        # Force client creation so tests can mock _client.request
+        self.client._ensure_client()
 
     async def asyncTearDown(self) -> None:
         await self.client.close()

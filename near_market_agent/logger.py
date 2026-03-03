@@ -21,7 +21,8 @@ class AgentLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
-        self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        # Include microseconds to avoid collision on rapid restarts
+        self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
         self._log_file = self.log_dir / f"agent_{self._session_id}.jsonl"
 
     def _write_log(self, level: str, event: str, **data: object) -> None:
