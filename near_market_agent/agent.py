@@ -32,6 +32,7 @@ class MarketAgent:
         self._active_bids: dict[str, Bid] = {}    # bid_id -> Bid
         self._active_jobs: dict[str, Job] = {}    # job_id -> Job (jobs we're working on)
         self._completed: set[str] = set()
+        self._revised_assignments: set[str] = set()  # assignment_ids we've already revised
         self._state_file = Path(config.log_dir) / "agent_state.json"
         self._running = False
         self._agent_id: str | None = None  # Cached after first auth check
@@ -172,7 +173,7 @@ class MarketAgent:
             all_jobs.extend(batch)
             if len(batch) < 100:
                 break
-            offset += 50
+            offset += 100
             await asyncio.sleep(0.5)  # Rate limit courtesy
             if offset > 1000:  # Safety cap — log if we hit it
                 self.log.warn(f"Hit pagination cap at {len(all_jobs)} jobs, some may be missed")
@@ -196,10 +197,10 @@ class MarketAgent:
         for j in new_jobs:
             self._seen_jobs.add(j.job_id)
         if len(self._seen_jobs) > 10_000:
-            # Keep only the most recent half
-            excess = len(self._seen_jobs) - 5_000
-            to_discard = list(self._seen_jobs)[:excess]
-            for jid in to_discard:
+            # Sets are unordered — trim to 5k arbitrarily. This is fine since
+            # worst case we re-evaluate a previously-seen job (idempotent).
+            discard_list = list(self._seen_jobs)[:5_000]
+            for jid in discard_list:
                 self._seen_jobs.discard(jid)
 
         # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
@@ -287,6 +288,9 @@ class MarketAgent:
                 self.log.warn(f"Failed to load existing bids: {e}")
 
         to_remove: list[str] = []
+        # Collect work to do AFTER scanning all bids (avoid blocking scan)
+        work_queue: list[tuple[Job, str]] = []
+
         for bid_id, bid in list(self._active_bids.items()):
             try:
                 # Re-fetch the job to check assignment status
@@ -309,8 +313,7 @@ class MarketAgent:
                             )
                             self._active_jobs[job.job_id] = job
                             to_remove.append(bid_id)
-                            # Start work immediately
-                            await self._do_work(job, assignment_id)
+                            work_queue.append((job, assignment_id))
                             break
 
                 # Check if bid was rejected (job awarded to someone else)
@@ -327,6 +330,10 @@ class MarketAgent:
 
         for bid_id in to_remove:
             self._active_bids.pop(bid_id, None)
+
+        # Execute work after all bids are checked
+        for job, assignment_id in work_queue:
+            await self._do_work(job, assignment_id)
 
     async def _check_active_jobs(self):
         """Check on jobs we're currently working on."""
@@ -353,17 +360,19 @@ class MarketAgent:
                         elif status == "in_progress" and asn.get("deliverable"):
                             # Was submitted but sent back for revisions
                             assignment_id = asn.get("assignment_id")
+                            if not assignment_id or assignment_id in self._revised_assignments:
+                                continue  # Already revised or missing ID
+
                             feedback = ""
-                            if assignment_id:
-                                try:
-                                    msgs = await self.client.get_assignment_messages(assignment_id, limit=5)
-                                    # Get the most recent message from the requester (not us)
-                                    for msg in reversed(msgs):
-                                        if msg.sender_agent_id != self._agent_id:
-                                            feedback = msg.content
-                                            break
-                                except MarketAPIError:
-                                    pass
+                            try:
+                                msgs = await self.client.get_assignment_messages(assignment_id, limit=5)
+                                # Get the most recent message from the requester (not us)
+                                for msg in reversed(msgs):
+                                    if msg.sender_agent_id != self._agent_id:
+                                        feedback = msg.content
+                                        break
+                            except MarketAPIError:
+                                pass
 
                             self.log.action(
                                 f"🔄 Revision requested for: {updated.title[:50]}",
@@ -371,7 +380,8 @@ class MarketAgent:
                                 feedback=feedback[:200] if feedback else "no feedback found",
                             )
 
-                            if feedback and assignment_id:
+                            if feedback:
+                                self._revised_assignments.add(assignment_id)
                                 await self._do_revision(updated, assignment_id, asn.get("deliverable", ""), feedback)
                         elif status == "disputed":
                             self.log.warn(
@@ -402,6 +412,7 @@ class MarketAgent:
         self.log.action(
             f"🔨 Working on: {job.title[:50]}",
             job_id=job.job_id,
+            assignment_id=assignment_id,
         )
 
         if self.config.dry_run:
@@ -489,6 +500,7 @@ class MarketAgent:
             "active_bids": {k: v.model_dump(mode="json") for k, v in self._active_bids.items()},
             "active_jobs": list(self._active_jobs.keys()),
             "completed": list(self._completed),
+            "revised_assignments": list(self._revised_assignments),
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
@@ -503,6 +515,7 @@ class MarketAgent:
                 self._seen_jobs = set(state.get("seen_jobs", []))
                 self._bid_jobs = set(state.get("bid_jobs", []))
                 self._completed = set(state.get("completed", []))
+                self._revised_assignments = set(state.get("revised_assignments", []))
                 raw_bids = state.get("active_bids", {})
                 if isinstance(raw_bids, dict):
                     restored_bids: dict[str, Bid] = {}

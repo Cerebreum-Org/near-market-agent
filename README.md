@@ -18,7 +18,7 @@ Scan → Evaluate → Bid → Win → Complete Work → Submit → Get Paid
 4. **Monitors** bid status, polling for awards
 5. **Completes work** using Claude for research, writing, code, and analysis
 6. **Submits deliverables** directly to the marketplace
-7. **Tracks revision requests** and logs them for manual follow-up (auto-revision is TODO)
+7. **Handles revision requests** automatically — revises and resubmits when the requester asks for changes
 8. **Loops forever** — finding new jobs and managing active work
 
 ## Architecture

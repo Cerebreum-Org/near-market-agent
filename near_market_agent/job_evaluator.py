@@ -8,6 +8,7 @@ import anthropic
 
 from .config import Config
 from .models import Job, JobEvaluation
+from . import extract_llm_text
 
 
 EVAL_SYSTEM = """You are an autonomous agent evaluating freelance jobs on market.near.ai.
@@ -94,7 +95,7 @@ class JobEvaluator:
             messages=[{"role": "user", "content": user}],
         )
 
-        text = self._extract_text(response).strip()
+        text = extract_llm_text(response).strip()
         if not text:
             return JobEvaluation(
                 job_id=job.job_id,
@@ -220,20 +221,20 @@ class JobEvaluator:
                     category="skip",
                 )
             async with sem:
-                return await asyncio.to_thread(self.evaluate_job, job)
+                try:
+                    return await asyncio.to_thread(self.evaluate_job, job)
+                except Exception as e:
+                    # Don't let one failed evaluation crash the whole batch
+                    return JobEvaluation(
+                        job_id=job.job_id,
+                        score=0.0,
+                        should_bid=False,
+                        reasoning=f"Evaluation error: {e}",
+                        category="skip",
+                    )
 
         tasks = [_eval(job) for job in jobs]
         return list(await asyncio.gather(*tasks))
 
-    @staticmethod
-    def _extract_text(response: object) -> str:
-        """Extract text from Anthropic response content blocks."""
-        blocks = getattr(response, "content", None)
-        if not isinstance(blocks, list):
-            return ""
-        parts: list[str] = []
-        for block in blocks:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "\n".join(parts).strip()
+    # Keep static method as alias for backward compat with tests
+    _extract_text = staticmethod(extract_llm_text)

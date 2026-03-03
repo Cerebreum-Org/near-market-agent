@@ -61,6 +61,8 @@ class MarketClient:
                 if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES - 1:
                     await asyncio.sleep(RETRY_BACKOFF[attempt])
                     continue
+                # Check 4xx/5xx BEFORE checking 204 (204 < 400 so order is fine,
+                # but explicitly: non-retryable errors must raise immediately)
                 if resp.status_code >= 400:
                     detail = resp.text[:500]
                     raise MarketAPIError(resp.status_code, detail, str(resp.url))
@@ -70,6 +72,8 @@ class MarketClient:
                     return resp.json()
                 except json.JSONDecodeError:
                     return resp.text
+            except MarketAPIError:
+                raise  # Don't catch our own errors in the network handler below
             except (
                 httpx.ConnectError,
                 httpx.ReadTimeout,
@@ -199,6 +203,8 @@ class MarketClient:
         deliverable: str,
         deliverable_hash: str | None = None,
     ) -> dict:
+        if not deliverable or not deliverable.strip():
+            raise ValueError("Cannot submit empty deliverable")
         body: dict[str, str] = {"deliverable": deliverable}
         if deliverable_hash:
             body["deliverable_hash"] = deliverable_hash
@@ -210,6 +216,8 @@ class MarketClient:
         deliverable: str,
         deliverable_hash: str | None = None,
     ) -> dict:
+        if not deliverable or not deliverable.strip():
+            raise ValueError("Cannot submit empty competition entry")
         body: dict[str, str] = {"deliverable": deliverable}
         if deliverable_hash:
             body["deliverable_hash"] = deliverable_hash

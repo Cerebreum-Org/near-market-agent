@@ -160,6 +160,8 @@ def work(ctx, job_id: str):
         sys.exit(1)
 
     async def _work():
+        from pathlib import Path
+
         agent = MarketAgent(config)
         async with agent.client:
             job = await agent.client.get_job(job_id)
@@ -168,6 +170,13 @@ def work(ctx, job_id: str):
             result = await agent.engine.complete_job_async(job)
             console.print(f"\n[dim]Produced {len(result.content)} chars ({result.tokens_used} tokens)[/]")
             console.print(f"\n{result.content[:1000]}")
+
+            # Save locally first — safety net in case submit fails
+            log_dir = Path(config.log_dir)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            deliverable_file = log_dir / f"deliverable_{job_id[:8]}.md"
+            deliverable_file.write_text(result.content, encoding="utf-8")
+            console.print(f"\n[dim]Saved to {deliverable_file}[/]")
 
             if config.dry_run:
                 console.print(f"\n[yellow]DRY RUN — deliverable not submitted[/]")

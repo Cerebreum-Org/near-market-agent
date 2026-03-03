@@ -9,6 +9,7 @@ import anthropic
 
 from .config import Config
 from .models import Job
+from . import extract_llm_text
 
 
 WORK_SYSTEM = """You are an autonomous agent completing freelance work on market.near.ai.
@@ -41,7 +42,7 @@ Full Description:
 
 ---
 
-Produce the complete deliverable now. Be thorough."""
+Produce the complete deliverable now. Be thorough and comprehensive. The quality of your work directly affects your reputation on this marketplace."""
 
 
 class WorkEngine:
@@ -68,7 +69,7 @@ class WorkEngine:
             }],
         )
 
-        content = self._extract_text(response)
+        content = extract_llm_text(response)
         if not content:
             raise RuntimeError(f"Empty response from LLM for job {job.job_id}")
         content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -110,7 +111,7 @@ class WorkEngine:
             ],
         )
 
-        content = self._extract_text(response)
+        content = extract_llm_text(response)
         if not content:
             raise RuntimeError(f"Empty revision response from LLM for job {job.job_id}")
         content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -133,17 +134,7 @@ class WorkEngine:
         """Run revision handling off the event loop."""
         return await asyncio.to_thread(self.handle_revision, job, original, feedback)
 
-    @staticmethod
-    def _extract_text(response: object) -> str:
-        blocks = getattr(response, "content", None)
-        if not isinstance(blocks, list):
-            return ""
-        parts: list[str] = []
-        for block in blocks:
-            text = getattr(block, "text", None)
-            if isinstance(text, str):
-                parts.append(text)
-        return "\n".join(parts).strip()
+    _extract_text = staticmethod(extract_llm_text)
 
 
 @dataclass
