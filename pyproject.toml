@@ -1,0 +1,21 @@
+[project]
+name = "near-market-agent"
+version = "0.1.0"
+description = "Autonomous agent for market.near.ai — finds jobs, bids, completes work, submits deliverables"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "anthropic>=0.40",
+    "pydantic>=2.0",
+    "click>=8.1",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+near-agent = "near_market_agent.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
