@@ -37,6 +37,7 @@ class MarketAgent:
         self._active_jobs: dict[str, Job] = {}
         self._completed: set[str] = set()
         self._revised_assignments: set[str] = set()
+        self._pending_revisions: list[tuple[Job, str, str]] = []
         self._state_file = Path(config.log_dir) / "agent_state.json"
         self._running = False
         self._agent_id: str | None = None
@@ -356,15 +357,13 @@ class MarketAgent:
             f"Revision requested for: {job.title[:50]}",
             job_id=job.job_id, assignment_id=assignment_id,
         )
-        if not hasattr(self, '_pending_revisions'):
-            self._pending_revisions: list[tuple[Job, str, str]] = []
         self._pending_revisions.append(
             (job, assignment_id, assignment.get("deliverable", ""))
         )
 
     async def _process_pending_revisions(self):
         """Process any pending revision requests."""
-        if not hasattr(self, '_pending_revisions') or not self._pending_revisions:
+        if not self._pending_revisions:
             return
 
         revisions = self._pending_revisions[:]

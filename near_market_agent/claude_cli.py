@@ -14,7 +14,6 @@ import logging
 import os
 import pty
 import subprocess
-import tempfile
 
 log = logging.getLogger(__name__)
 

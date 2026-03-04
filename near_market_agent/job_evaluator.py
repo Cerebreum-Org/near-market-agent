@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 from .config import Config
 from .models import Job, JobEvaluation
 from .claude_cli import ClaudeCLI
 from .json_utils import extract_json
+from .job_router import classify
 from .sanitize import sanitize_job
 
 
@@ -54,10 +54,6 @@ Type: {job_type}
 
 Description:
 {description}"""
-
-
-# Keep backward-compatible name for tests that import _extract_json
-_extract_json = extract_json
 
 
 def _skip_result(job_id: str, reason: str) -> JobEvaluation:
@@ -155,8 +151,6 @@ class JobEvaluator:
         if job.budget_near < self.config.min_budget_near:
             return f"Budget too low ({job.budget_near} < {self.config.min_budget_near} NEAR)"
 
-        # --- Check disabled tiers ---
-        from .job_router import classify
         routing = classify(job)
         if self.config.tiers.is_disabled(routing.tier.value):
             return f"Tier {routing.tier.value} is disabled"

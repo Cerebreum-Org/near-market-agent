@@ -11,10 +11,8 @@ from __future__ import annotations
 import asyncio
 import glob
 import hashlib
-import json
 import logging
 import os
-import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -109,10 +107,6 @@ def _truncate_at_line(text: str, max_chars: int) -> str:
         return text
     cut = text.rfind("\n", 0, max_chars)
     return text[:cut] if cut != -1 else text[:max_chars]
-
-
-# Keep backward-compatible name for tests that import it directly
-_extract_json = extract_json
 
 
 def cleanup_stale_workspaces(max_age_hours: int = 24) -> int:
@@ -479,6 +473,37 @@ class WorkEngine:
                 deliverable = self._revise(job, deliverable, review.feedback)
         return deliverable, False
 
+    def _run_review_pipeline(
+        self, job: Job, content: str, tier: str,
+        workspace_files: list[str] | None = None,
+    ) -> WorkResult:
+        """Run 3-stage review pipeline and return a WorkResult."""
+        reviews: list[ReviewResult] = []
+
+        for stage_name, system_prompt in [
+            ("requirements", REVIEW_1_REQUIREMENTS),
+            ("quality", REVIEW_2_QUALITY),
+            ("final", REVIEW_3_FINAL),
+        ]:
+            content, _ = self._run_stage(stage_name, system_prompt, job, content, reviews)
+
+        total_revisions = sum(1 for r in reviews if not r.passed)
+        log.info(
+            f"Review pipeline done: {len(content)} chars, "
+            f"{len(reviews)} reviews, {total_revisions} revisions"
+        )
+
+        return WorkResult(
+            job_id=job.job_id,
+            content=content,
+            content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
+            model=self.config.model,
+            reviews=reviews,
+            revisions=total_revisions,
+            tier=tier,
+            workspace_files=workspace_files or [],
+        )
+
     # --- Main pipeline ---
 
     def complete_job(self, job: Job) -> WorkResult:
@@ -489,7 +514,6 @@ class WorkEngine:
         routing = classify(job)
         log.info(f"Routed to tier={routing.tier.value} agent={routing.agent} reason={routing.reason}")
 
-        # Check if tier is disabled
         if self.config.tiers.is_disabled(routing.tier.value):
             raise RuntimeError(f"Tier {routing.tier.value} is disabled via config")
 
@@ -513,45 +537,11 @@ class WorkEngine:
                 files = []
 
             # Step 5: Review pipeline
-            reviews: list[ReviewResult] = []
-            total_revisions = 0
-
-            content, _ = self._run_stage(
-                "requirements", REVIEW_1_REQUIREMENTS, job, content, reviews,
-            )
-            total_revisions += sum(1 for r in reviews if not r.passed)
-
-            content, _ = self._run_stage(
-                "quality", REVIEW_2_QUALITY, job, content, reviews,
-            )
-            total_revisions += sum(
-                1 for r in reviews if r.stage == "quality" and not r.passed
-            )
-
-            content, _ = self._run_stage(
-                "final", REVIEW_3_FINAL, job, content, reviews,
-            )
-            total_revisions += sum(
-                1 for r in reviews if r.stage == "final" and not r.passed
-            )
-
-            log.info(
-                f"Job complete: {len(content)} chars, "
-                f"{len(reviews)} reviews, {total_revisions} revisions"
-            )
-
-            return WorkResult(
-                job_id=job.job_id,
-                content=content,
-                content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
-                model=self.config.model,
-                reviews=reviews,
-                revisions=total_revisions,
-                tier=routing.tier.value,
+            return self._run_review_pipeline(
+                job, content, routing.tier.value,
                 workspace_files=files if routing.tier != JobTier.TEXT else [],
             )
         finally:
-            # Cleanup workspace
             shutil.rmtree(workspace, ignore_errors=True)
             log.info(f"Cleaned workspace: {workspace}")
 
@@ -561,83 +551,17 @@ class WorkEngine:
 
         routing = classify(job)
 
-        # For code tiers, use agentic revision
         if routing.tier != JobTier.TEXT:
             workspace = self._setup_workspace(job, routing)
             try:
-                # Write original deliverable to workspace for context
                 Path(workspace, "PREVIOUS_DELIVERABLE.md").write_text(original)
-
                 revised = self._revise_agentic(job, routing, workspace, feedback)
-
-                reviews: list[ReviewResult] = []
-                total_revisions = 0
-
-                revised, _ = self._run_stage(
-                    "requirements", REVIEW_1_REQUIREMENTS, job, revised, reviews,
-                )
-                total_revisions += sum(1 for r in reviews if not r.passed)
-
-                revised, _ = self._run_stage(
-                    "quality", REVIEW_2_QUALITY, job, revised, reviews,
-                )
-                total_revisions += sum(
-                    1 for r in reviews if r.stage == "quality" and not r.passed
-                )
-
-                revised, _ = self._run_stage(
-                    "final", REVIEW_3_FINAL, job, revised, reviews,
-                )
-                total_revisions += sum(
-                    1 for r in reviews if r.stage == "final" and not r.passed
-                )
-
-                return WorkResult(
-                    job_id=job.job_id,
-                    content=revised,
-                    content_hash=f"sha256:{hashlib.sha256(revised.encode()).hexdigest()}",
-                    model=self.config.model,
-                    reviews=reviews,
-                    revisions=total_revisions,
-                    tier=routing.tier.value,
-                )
+                return self._run_review_pipeline(job, revised, routing.tier.value)
             finally:
                 shutil.rmtree(workspace, ignore_errors=True)
         else:
-            # Text tier: prompt-mode revision
             revised = self._revise(job, original, feedback)
-
-            reviews: list[ReviewResult] = []
-            total_revisions = 0
-
-            revised, _ = self._run_stage(
-                "requirements", REVIEW_1_REQUIREMENTS, job, revised, reviews,
-            )
-            total_revisions += sum(1 for r in reviews if not r.passed)
-
-            revised, _ = self._run_stage(
-                "quality", REVIEW_2_QUALITY, job, revised, reviews,
-            )
-            total_revisions += sum(
-                1 for r in reviews if r.stage == "quality" and not r.passed
-            )
-
-            revised, _ = self._run_stage(
-                "final", REVIEW_3_FINAL, job, revised, reviews,
-            )
-            total_revisions += sum(
-                1 for r in reviews if r.stage == "final" and not r.passed
-            )
-
-            return WorkResult(
-                job_id=job.job_id,
-                content=revised,
-                content_hash=f"sha256:{hashlib.sha256(revised.encode()).hexdigest()}",
-                model=self.config.model,
-                reviews=reviews,
-                revisions=total_revisions,
-                tier=routing.tier.value,
-            )
+            return self._run_review_pipeline(job, revised, routing.tier.value)
 
     async def complete_job_async(self, job: Job) -> WorkResult:
         return await asyncio.to_thread(self.complete_job, job)
