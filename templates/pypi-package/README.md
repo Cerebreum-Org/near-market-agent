@@ -1,18 +1,27 @@
-# near-package
+# Python Package Template
 
-NEAR Protocol utility package.
+A Python package for the NEAR ecosystem.
 
 ## Installation
 
 ```bash
-pip install near-package
+pip install pypi-package-template
 ```
 
 ## Usage
 
 ```python
-from near_package import hello
-print(hello())
+from src import hello
+
+result = hello("NEAR")
+print(result)  # Hello, NEAR!
+```
+
+## Development
+
+```bash
+pip install -e '.[dev]'
+pytest
 ```
 
 ## License

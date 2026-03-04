@@ -1,8 +1,8 @@
-# near-mcp-server
+# MCP Server Template
 
-MCP server for NEAR Protocol integration.
+A Model Context Protocol (MCP) server for the NEAR ecosystem.
 
-## Installation
+## Setup
 
 ```bash
 npm install
@@ -12,16 +12,27 @@ npm run build
 ## Usage
 
 ```bash
+# Run the server
 npm start
+
+# Development mode
+npm run dev
 ```
 
 ## Tools
 
-<!-- TODO: Document tools -->
+| Tool | Description |
+|------|-------------|
+| `example_tool` | An example tool — replace with your implementation |
 
 ## Development
 
 ```bash
-npm run dev   # Run with hot reload
-npm test      # Run tests
+npm test        # Run tests
+npm run lint    # Lint source
+npm run build   # Compile TypeScript
 ```
+
+## License
+
+MIT

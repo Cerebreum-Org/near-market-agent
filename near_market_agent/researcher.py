@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -241,7 +242,7 @@ class Researcher:
 
         Steps:
         1. Extract key technologies and search queries from job description
-        2. Run web searches for documentation and examples
+        2. Run web searches for documentation and examples (if BRAVE_API_KEY set)
         3. Look up specific packages on npm/pypi
         4. Fetch key documentation pages
         5. Synthesize everything into an actionable research brief
@@ -249,24 +250,34 @@ class Researcher:
         safe_title = sanitize_text(job_title, max_length=500)
         safe_desc = sanitize_text(job_description, max_length=8000)
 
+        has_brave_key = bool(os.environ.get("BRAVE_API_KEY"))
+        if not has_brave_key:
+            log.warning(
+                "BRAVE_API_KEY not set — web search disabled. "
+                "Research will rely on package lookups and LLM knowledge only."
+            )
+
         # Step 1: Extract research topics
         log.info("Research phase: extracting topics...")
         topics = self._extract_topics(safe_title, safe_desc)
 
-        # Step 2: Run web searches
+        # Step 2: Run web searches (only if API key available)
         raw_materials: list[str] = []
         sources: list[str] = []
 
-        for query in topics.get("search_queries", [])[:8]:
-            log.info(f"Research: searching '{query}'")
-            results = _run_web_search(query)
-            for r in results[:3]:
-                raw_materials.append(
-                    f"### Search: {query}\n"
-                    f"**{r.get('title', '')}** — {r.get('url', '')}\n"
-                    f"{r.get('snippet', '')}\n"
-                )
-                sources.append(r.get("url", ""))
+        if has_brave_key:
+            for query in topics.get("search_queries", [])[:8]:
+                log.info(f"Research: searching '{query}'")
+                results = _run_web_search(query)
+                for r in results[:3]:
+                    raw_materials.append(
+                        f"### Search: {query}\n"
+                        f"**{r.get('title', '')}** — {r.get('url', '')}\n"
+                        f"{r.get('snippet', '')}\n"
+                    )
+                    sources.append(r.get("url", ""))
+        else:
+            log.info("Research: skipping web search (no BRAVE_API_KEY)")
 
         # Step 3: Look up packages
         packages_found = []

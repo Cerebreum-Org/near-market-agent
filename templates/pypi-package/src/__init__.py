@@ -1,8 +1,8 @@
-"""NEAR Protocol utility package."""
+"""Package template for NEAR ecosystem."""
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 
 
-def hello() -> str:
-    """Return a greeting."""
-    return "Hello from near-package"
+def hello(name: str) -> str:
+    """Greet someone by name."""
+    return f"Hello, {name}!"

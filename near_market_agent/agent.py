@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import signal
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -42,9 +44,51 @@ class MarketAgent:
         self._running = False
         self._agent_id: str | None = None
 
+    def _readiness_check(self):
+        """Check that required tools and env vars are available. Log warnings/errors."""
+        self.log.action("Running readiness check...")
+
+        # Fatal: claude CLI is required for all work
+        if not shutil.which("claude"):
+            self.log.error(
+                "FATAL: 'claude' CLI not found on PATH. "
+                "Cannot build deliverables without it."
+            )
+            raise SystemExit(1)
+
+        # Warnings for optional tools
+        checks = {
+            "gh": "GitHub CLI — code deliverables won't be pushed to repos",
+            "node": "Node.js — npm packages can't be built/tested",
+            "npm": "npm — npm packages can't be installed/tested",
+            "cargo": "Cargo — Rust projects can't be built/tested",
+        }
+        for tool, desc in checks.items():
+            if shutil.which(tool):
+                self.log.info(f"  ✓ {tool}")
+            else:
+                self.log.warn(f"  ✗ {tool} not found — {desc}")
+
+        # Environment variables
+        if os.environ.get("BRAVE_API_KEY"):
+            self.log.info("  ✓ BRAVE_API_KEY set")
+        else:
+            self.log.warn(
+                "  ✗ BRAVE_API_KEY not set — web search disabled, "
+                "research phase will rely on package lookups and LLM knowledge only"
+            )
+
+        if os.environ.get("NEAR_MARKET_API_KEY"):
+            self.log.info("  ✓ NEAR_MARKET_API_KEY set")
+        else:
+            self.log.warn("  ✗ NEAR_MARKET_API_KEY not set — API calls will fail")
+
+        self.log.action("Readiness check complete")
+
     async def run(self):
         """Main agent loop."""
         self.log.action("Agent starting up")
+        self._readiness_check()
         self._load_state()
         self._running = True
 
@@ -434,6 +478,11 @@ class MarketAgent:
         filepath = Path(self.config.log_dir) / f"{label}_{job.job_id[:8]}.md"
         filepath.write_text(result.content, encoding="utf-8")
         self.log.info(f"Saved {label} to {filepath}", job_id=job.job_id)
+
+        # Log repo URL if code was pushed
+        repo_url = getattr(result, "repo_url", None)
+        if repo_url:
+            self.log.action(f"Code pushed to {repo_url}", job_id=job.job_id)
 
         await self.client.submit_deliverable(
             job_id=job.job_id,

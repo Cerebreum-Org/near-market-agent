@@ -28,11 +28,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .alignment import AlignmentMonitor, AlignmentReport
 from .config import Config
+from .deployer import verify_build, DeployResult
+from .github_publisher import publish_workspace, gh_available
 from .models import Job
 from .claude_cli import ClaudeCLI
 from .job_router import classify, JobTier, RoutingResult
@@ -192,6 +195,8 @@ class WorkResult:
     execution_result: ExecutionResult | None = None
     publish_artifacts: list[str] = field(default_factory=list)
     cost_tier: str = "full"  # "lightweight" or "full"
+    repo_url: str | None = None
+    deploy_result: DeployResult | None = None
 
     @property
     def preview(self) -> str:
@@ -221,6 +226,14 @@ class WorkResult:
                 "test_count": self.execution_result.test_count,
                 "fail_count": self.execution_result.fail_count,
             }
+        if self.repo_url:
+            d["repo_url"] = self.repo_url
+        if self.deploy_result:
+            d["deploy"] = {
+                "success": self.deploy_result.success,
+                "method": self.deploy_result.method,
+                "output": self.deploy_result.output[:500],
+            }
         return d
 
 
@@ -243,6 +256,8 @@ class WorkEngine:
     MAX_REVISIONS_PER_STAGE = 2
     LIGHTWEIGHT_BUDGET_THRESHOLD = 3.0
     EXEC_TIMEOUT = 120  # seconds for test execution
+    BUILDER_MAX_RETRIES = 2
+    BUILDER_RETRY_DELAY = 10  # seconds between retries
 
     # Publish-related keywords
     _PUBLISH_TAGS = {"npm", "pypi", "publish", "deploy", "package"}
@@ -390,8 +405,13 @@ class WorkEngine:
 
     # --- Agent execution ---
 
+    @staticmethod
+    def _check_tool(name: str) -> bool:
+        """Check if a CLI tool is available on PATH."""
+        return shutil.which(name) is not None
+
     def _run_builder(self, job: Job, routing: RoutingResult, workspace: str) -> str:
-        """Run the appropriate builder agent in the workspace."""
+        """Run the appropriate builder agent in the workspace with retry logic."""
         prompt = (
             f"Read JOB.md for the job description. "
             f"Read REQUIREMENTS.md for the specific requirements checklist — "
@@ -418,16 +438,33 @@ class WorkEngine:
             f"timeout={tier_timeout}s model={tier_model}"
         )
 
-        try:
-            self.claude.run_agent(
-                agent=routing.agent,
-                prompt=prompt,
-                workdir=workspace,
-                timeout=tier_timeout,
-                model=tier_model,
-            )
-        except RuntimeError as e:
-            log.warning(f"Agentic builder failed ({e}), falling back to prompt mode")
+        last_error: RuntimeError | None = None
+        for attempt in range(1 + self.BUILDER_MAX_RETRIES):
+            try:
+                self.claude.run_agent(
+                    agent=routing.agent,
+                    prompt=prompt,
+                    workdir=workspace,
+                    timeout=tier_timeout,
+                    model=tier_model,
+                )
+                last_error = None
+                break
+            except RuntimeError as e:
+                last_error = e
+                if attempt < self.BUILDER_MAX_RETRIES:
+                    log.warning(
+                        f"Builder attempt {attempt + 1} failed ({e}), "
+                        f"retrying in {self.BUILDER_RETRY_DELAY}s..."
+                    )
+                    time.sleep(self.BUILDER_RETRY_DELAY)
+                else:
+                    log.warning(
+                        f"Builder failed after {attempt + 1} attempts ({e}), "
+                        f"falling back to prompt mode"
+                    )
+
+        if last_error is not None:
             return self._fallback_generate(job, workspace, routing)
 
         content, files = self._collect_deliverable(workspace, routing)
@@ -499,12 +536,25 @@ class WorkEngine:
         pkg_json = os.path.join(workspace, "package.json")
         pyproject = os.path.join(workspace, "pyproject.toml")
         cargo = os.path.join(workspace, "Cargo.toml")
+        requirements_txt = os.path.join(workspace, "requirements.txt")
 
         if os.path.exists(pkg_json):
+            if not self._check_tool("node"):
+                log.warning("node not installed — skipping npm tests")
+                return ExecutionResult(passed=True, framework="none",
+                                       output="node not installed — skipped tests")
             return self._run_npm_tests(workspace)
-        elif os.path.exists(pyproject):
+        elif os.path.exists(pyproject) or os.path.exists(requirements_txt):
+            if not self._check_tool("python3") and not self._check_tool("python"):
+                log.warning("python not installed — skipping pytest")
+                return ExecutionResult(passed=True, framework="none",
+                                       output="python not installed — skipped tests")
             return self._run_python_tests(workspace)
         elif os.path.exists(cargo):
+            if not self._check_tool("cargo"):
+                log.warning("cargo not installed — skipping cargo tests")
+                return ExecutionResult(passed=True, framework="none",
+                                       output="cargo not installed — skipped tests")
             return self._run_cargo_tests(workspace)
         else:
             log.info("No test framework detected in workspace")
@@ -542,10 +592,21 @@ class WorkEngine:
             return ExecutionResult(passed=False, framework="npm", output="Test execution timed out")
 
     def _run_python_tests(self, workspace: str) -> ExecutionResult:
-        """Run pytest."""
+        """Run pytest, installing dependencies first."""
         log.info("Running pytest...")
+        python = "python3" if self._check_tool("python3") else "python"
         try:
-            result = self._exec_cmd("python -m pytest -v --tb=short 2>&1", workspace)
+            # Install dependencies before running tests
+            pyproject = os.path.join(workspace, "pyproject.toml")
+            requirements = os.path.join(workspace, "requirements.txt")
+            if os.path.exists(pyproject):
+                log.info("Installing Python package (editable)...")
+                self._exec_cmd(f"{python} -m pip install -e '.[test,dev]' 2>&1", workspace)
+            elif os.path.exists(requirements):
+                log.info("Installing requirements.txt...")
+                self._exec_cmd(f"{python} -m pip install -r requirements.txt 2>&1", workspace)
+
+            result = self._exec_cmd(f"{python} -m pytest -v --tb=short 2>&1", workspace)
             output = result.stdout + result.stderr
             passed = result.returncode == 0
 
@@ -1000,6 +1061,31 @@ class WorkEngine:
             final_report = "\n\n---\n\n".join(r.to_markdown() for r in alignment_reports)
             Path(workspace, "ALIGNMENT_REPORT.md").write_text(final_report)
 
+            # Step 5d: Build verification
+            deploy = verify_build(workspace, routing)
+            log.info(f"Build verification: {deploy.summary()}")
+
+            # Include build verification in grounded alignment context
+            if not deploy.success:
+                log.warning(f"Build verification failed — feeding to builder for fix")
+                fix_prompt = (
+                    f"The project FAILS to build. Fix it.\n\n"
+                    f"Build output:\n```\n{deploy.output[-2000:]}\n```\n\n"
+                    f"Fix the build errors. The project must compile/build without errors."
+                )
+                tier_timeout_fix = self.config.tiers.timeout_for(routing.tier.value)
+                tier_model_fix = self.config.tiers.model_for(routing.tier.value, self.config.model)
+                try:
+                    self.claude.run_agent(
+                        agent=routing.agent, prompt=fix_prompt,
+                        workdir=workspace, timeout=tier_timeout_fix,
+                        model=tier_model_fix,
+                    )
+                    deploy = verify_build(workspace, routing)
+                    log.info(f"Build re-verification: {deploy.summary()}")
+                except RuntimeError as e:
+                    log.warning(f"Build fix attempt failed: {e}")
+
             # Step 6: Review pipeline
             result = self._run_review_pipeline(
                 job, content, routing.tier.value,
@@ -1007,6 +1093,7 @@ class WorkEngine:
             )
             result.alignment_reports = alignment_reports
             result.execution_result = exec_result
+            result.deploy_result = deploy
             result.cost_tier = cost_label
 
             # Step 7: Publish artifacts if needed
@@ -1014,6 +1101,22 @@ class WorkEngine:
             result.publish_artifacts = artifacts
             if artifacts:
                 log.info(f"Created {len(artifacts)} publish artifact(s): {artifacts}")
+
+            # Step 8: Push code to GitHub for code deliverables
+            if routing.tier in (JobTier.PACKAGE, JobTier.SERVICE, JobTier.SYSTEM):
+                repo_url = publish_workspace(workspace, job.title, job.job_id)
+                result.repo_url = repo_url
+                if repo_url:
+                    log.info(f"Code published to {repo_url}")
+                    # Prepend repo URL to deliverable content
+                    result.content = (
+                        f"## GitHub Repository\n\n{repo_url}\n\n---\n\n{result.content}"
+                    )
+                    result.content_hash = (
+                        f"sha256:{hashlib.sha256(result.content.encode()).hexdigest()}"
+                    )
+                else:
+                    log.warning("GitHub publish failed — submitting text-only deliverable")
 
             return result
         finally:
