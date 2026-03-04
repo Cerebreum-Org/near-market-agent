@@ -1,7 +1,10 @@
-"""Claude CLI wrapper — replaces direct Anthropic API calls with `claude -p`.
+"""Claude CLI wrapper — supports both prompt mode (-p) and agentic mode.
 
 Claude CLI requires a PTY on stdin to avoid hanging, so we allocate one
 via Python's pty module while still capturing stdout via PIPE.
+
+Agentic mode uses --print with --agent and --dangerously-skip-permissions
+to let Claude Code read/edit files, run commands, etc.
 """
 
 from __future__ import annotations
@@ -10,10 +13,11 @@ import asyncio
 import os
 import pty
 import subprocess
+import tempfile
 
 
 class ClaudeCLI:
-    """Thin wrapper around `claude -p` for non-interactive LLM calls."""
+    """Wrapper around Claude Code CLI supporting prompt and agentic modes."""
 
     def __init__(self, model: str = "sonnet", max_tokens: int = 4096):
         self.model = model
@@ -24,16 +28,40 @@ class ClaudeCLI:
         prompt: str,
         system: str | None = None,
         max_tokens: int | None = None,
+        agent: str | None = None,
+        workdir: str | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> str:
-        """Run a single prompt through claude CLI and return the text output."""
+        """Run a prompt through claude CLI and return text output.
+
+        Args:
+            prompt: The user prompt.
+            system: System prompt (prompt mode only, ignored with agent).
+            max_tokens: Max output tokens (not directly supported by CLI, reserved).
+            agent: Agent name (e.g. 'code-simplifier'). Enables agentic mode.
+            workdir: Working directory for agentic mode.
+            allowed_tools: List of allowed tools for agentic mode.
+        """
         cmd = [
             "claude",
             "-p",
             "--model", self.model,
             "--output-format", "text",
         ]
-        if system:
+
+        if agent:
+            cmd.extend(["--agent", agent])
+            cmd.append("--dangerously-skip-permissions")
+
+        if allowed_tools:
+            cmd.extend(["--allowedTools", *allowed_tools])
+
+        if system and not agent:
             cmd.extend(["--system-prompt", system])
+        elif system and agent:
+            # With agents, append system context as part of the prompt
+            cmd.extend(["--append-system-prompt", system])
+
         cmd.append(prompt)
 
         # Claude CLI needs a PTY on stdin or it hangs
@@ -45,11 +73,12 @@ class ClaudeCLI:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 close_fds=True,
+                cwd=workdir,
             )
             os.close(slave_fd)
-            slave_fd = -1  # mark as closed
+            slave_fd = -1
 
-            stdout, stderr = proc.communicate(timeout=300)
+            stdout, stderr = proc.communicate(timeout=600)
         finally:
             if slave_fd != -1:
                 os.close(slave_fd)
@@ -66,9 +95,14 @@ class ClaudeCLI:
         prompt: str,
         system: str | None = None,
         max_tokens: int | None = None,
+        agent: str | None = None,
+        workdir: str | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> str:
-        """Async version — runs in a thread to not block the event loop."""
-        return await asyncio.to_thread(self._run, prompt, system, max_tokens)
+        """Async version — runs in a thread."""
+        return await asyncio.to_thread(
+            self._run, prompt, system, max_tokens, agent, workdir, allowed_tools,
+        )
 
     def create_message(
         self,
@@ -76,7 +110,7 @@ class ClaudeCLI:
         user: str,
         max_tokens: int | None = None,
     ) -> str:
-        """Drop-in replacement for anthropic messages.create — returns raw text."""
+        """Prompt mode — returns raw text."""
         return self._run(user, system=system, max_tokens=max_tokens)
 
     async def create_message_async(
@@ -85,8 +119,63 @@ class ClaudeCLI:
         user: str,
         max_tokens: int | None = None,
     ) -> str:
-        """Async version of create_message."""
         return await self._run_async(user, system=system, max_tokens=max_tokens)
+
+    def run_agent(
+        self,
+        agent: str,
+        prompt: str,
+        system: str | None = None,
+        workdir: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ) -> str:
+        """Agentic mode — Claude Code with tools, file access, etc."""
+        return self._run(
+            prompt,
+            system=system,
+            agent=agent,
+            workdir=workdir,
+            allowed_tools=allowed_tools,
+        )
+
+    async def run_agent_async(
+        self,
+        agent: str,
+        prompt: str,
+        system: str | None = None,
+        workdir: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ) -> str:
+        return await self._run_async(
+            prompt,
+            system=system,
+            agent=agent,
+            workdir=workdir,
+            allowed_tools=allowed_tools,
+        )
+
+    def simplify_file(self, file_path: str) -> str:
+        """Run the code-simplifier agent on a file and return simplified content.
+
+        Writes the file, runs code-simplifier in its directory, reads result back.
+        """
+        workdir = os.path.dirname(os.path.abspath(file_path))
+        filename = os.path.basename(file_path)
+
+        prompt = (
+            f"Simplify the file '{filename}' in the current directory. "
+            f"Read it, apply all simplification rules, and write the simplified "
+            f"version back to the same file. Keep all functionality intact."
+        )
+
+        self.run_agent(
+            agent="code-simplifier",
+            prompt=prompt,
+            workdir=workdir,
+        )
+
+        with open(file_path) as f:
+            return f.read()
 
     def create_conversation(
         self,
@@ -94,11 +183,7 @@ class ClaudeCLI:
         messages: list[dict[str, str]],
         max_tokens: int | None = None,
     ) -> str:
-        """Handle multi-turn conversations by flattening into a single prompt.
-
-        Claude CLI doesn't support multi-turn natively in -p mode,
-        so we serialize the conversation into the prompt.
-        """
+        """Multi-turn via flattened prompt (CLI doesn't support multi-turn natively)."""
         parts = []
         for msg in messages:
             role = msg["role"]
@@ -116,7 +201,6 @@ class ClaudeCLI:
         messages: list[dict[str, str]],
         max_tokens: int | None = None,
     ) -> str:
-        """Async version of create_conversation."""
         return await asyncio.to_thread(
             self.create_conversation, system, messages, max_tokens
         )

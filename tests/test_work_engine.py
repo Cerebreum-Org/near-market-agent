@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -37,15 +38,16 @@ class WorkEngineTests(unittest.TestCase):
 
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
-            # generate → simplify → review1 → review2 → review3
+            # generate → review1 → review2 → review3 (simplify is mocked separately)
             mock_claude.create_message.side_effect = [
                 "# Guide\nAsync Python is great.",
-                "# Guide\nAsync Python is great.",  # simplify pass
                 PASSING_REVIEW,
                 PASSING_REVIEW,
                 PASSING_REVIEW,
             ]
             engine = WorkEngine(cfg)
+            # Mock _simplify to pass through (code-simplifier agent needs real FS)
+            engine._simplify = lambda job, content: content
             result = engine.complete_job(_job())
 
         self.assertEqual(result.job_id, "job-1")
@@ -63,7 +65,6 @@ class WorkEngineTests(unittest.TestCase):
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
                 "# Draft\nWeak content.",          # generate
-                "# Draft\nWeak content.",           # simplify pass
                 FAILING_REVIEW,                     # review 1 fails
                 "# Revised\nBetter content.",       # revision
                 PASSING_REVIEW,                     # review 1 passes
@@ -71,6 +72,7 @@ class WorkEngineTests(unittest.TestCase):
                 PASSING_REVIEW,                     # review 3 passes
             ]
             engine = WorkEngine(cfg)
+            engine._simplify = lambda job, content: content
             result = engine.complete_job(_job())
 
         self.assertIn("Better content", result.content)
@@ -97,18 +99,36 @@ class WorkEngineTests(unittest.TestCase):
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
                 "# Revised Guide\nNow with more detail.",  # revision
-                "# Revised Guide\nNow with more detail.",  # simplify pass
                 PASSING_REVIEW,                              # review 1
                 PASSING_REVIEW,                              # review 2
                 PASSING_REVIEW,                              # review 3
             ]
             engine = WorkEngine(cfg)
+            engine._simplify = lambda job, content: content
             result = engine.handle_revision(
                 _job(), "Original content", "Need more examples"
             )
 
         self.assertIn("Revised Guide", result.content)
         self.assertEqual(len(result.reviews), 3)
+
+    def test_simplify_writes_temp_file_and_runs_agent(self) -> None:
+        """_simplify writes deliverable to temp file and calls run_agent."""
+        cfg = Config(market_api_key="m")
+
+        with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
+            mock_claude = MockCLI.return_value
+            # run_agent modifies the file in place — we simulate by doing nothing
+            # (the file stays as-is, so we get back the original content)
+            mock_claude.run_agent.return_value = ""
+            engine = WorkEngine(cfg)
+            job = _job(tags=["python"])
+            result = engine._simplify(job, "def foo():\n    return 1\n")
+
+        self.assertIn("def foo", result)
+        mock_claude.run_agent.assert_called_once()
+        call_kwargs = mock_claude.run_agent.call_args
+        self.assertEqual(call_kwargs.kwargs.get("agent") or call_kwargs[1].get("agent", call_kwargs[0][0] if call_kwargs[0] else None), "code-simplifier")
 
     def test_work_result_preview_truncates(self) -> None:
         r = WorkResult(job_id="j1", content="x" * 300, content_hash="sha256:abc")

@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 
 from .config import Config
@@ -99,22 +101,9 @@ REVISE_SYSTEM = """You are revising a deliverable based on review feedback.
 Apply the feedback precisely. Keep everything that was good. Fix what was flagged.
 Output ONLY the revised deliverable — complete, not a diff."""
 
-SIMPLIFY_SYSTEM = """You are a code simplification expert. Your job is to simplify and refine a deliverable.
-
-Rules:
-1. Remove unnecessary complexity, boilerplate, and verbose patterns
-2. Combine redundant logic, flatten excessive nesting
-3. Improve variable/function names for clarity
-4. Remove dead code, unused imports, redundant comments
-5. Prefer standard library solutions over custom implementations
-6. Keep ALL functionality intact — simplify, don't remove features
-7. If the deliverable is prose/documentation (not code), tighten the writing:
-   - Cut filler words and redundant sentences
-   - Merge overlapping sections
-   - Make examples more concise
-8. Output ONLY the simplified deliverable — complete, not a diff
-
-The goal: same functionality, fewer lines, clearer intent."""
+SIMPLIFY_CONTEXT = """This file is a deliverable for a freelance job on market.near.ai.
+Simplify it while preserving ALL functionality and content.
+The result will be submitted to a paying client."""
 
 
 def _truncate_at_line(text: str, max_chars: int) -> str:
@@ -309,18 +298,45 @@ class WorkEngine:
         return deliverable, False
 
     def _simplify(self, job: Job, deliverable: str) -> str:
-        """Run Claude Code simplification pass on the deliverable."""
-        prompt = (
-            f"JOB: {job.title}\n\n"
-            f"DELIVERABLE TO SIMPLIFY:\n{_truncate_at_line(deliverable, 12000)}\n\n"
-            f"Simplify this deliverable. Keep all functionality and content. "
-            f"Make it cleaner, tighter, and more professional."
-        )
-        return self.claude.create_message(
-            system=SIMPLIFY_SYSTEM,
-            user=prompt,
-            max_tokens=self.config.max_tokens,
-        )
+        """Run Claude Code's code-simplifier agent on the deliverable.
+
+        Writes deliverable to a temp file, runs the code-simplifier agent
+        in agentic mode, and reads back the simplified result.
+        """
+        # Determine file extension from job context
+        ext = ".md"
+        tags_lower = [t.lower() for t in (job.tags or [])]
+        if any(t in tags_lower for t in ("python", "py")):
+            ext = ".py"
+        elif any(t in tags_lower for t in ("javascript", "js", "typescript", "ts")):
+            ext = ".js"
+        elif any(t in tags_lower for t in ("rust", "rs")):
+            ext = ".rs"
+        elif any(t in tags_lower for t in ("solidity", "sol")):
+            ext = ".sol"
+
+        with tempfile.TemporaryDirectory(prefix="near_simplify_") as tmpdir:
+            filepath = os.path.join(tmpdir, f"deliverable{ext}")
+            with open(filepath, "w") as f:
+                f.write(deliverable)
+
+            try:
+                self.claude.run_agent(
+                    agent="code-simplifier",
+                    prompt=(
+                        f"Simplify the file 'deliverable{ext}' in the current directory. "
+                        f"This is a deliverable for: {job.title}. "
+                        f"Read it, simplify it, and write the result back to the same file."
+                    ),
+                    system=SIMPLIFY_CONTEXT,
+                    workdir=tmpdir,
+                )
+                with open(filepath) as f:
+                    simplified = f.read().strip()
+                return simplified if simplified else deliverable
+            except RuntimeError:
+                # If code-simplifier fails, return original
+                return deliverable
 
     def complete_job(self, job: Job) -> WorkResult:
         """Complete a job through the full generate + simplify + 3-review pipeline."""
