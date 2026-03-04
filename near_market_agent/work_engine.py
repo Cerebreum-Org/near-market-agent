@@ -1,4 +1,10 @@
-"""LLM-powered work completion engine with 3-stage review pipeline."""
+"""Agentic work completion engine with tiered builders and 3-stage review.
+
+Pipeline:
+    Job → Route (classify tier) → Setup workspace → Run agent → Code-simplify
+      → Review 1 (Requirements) → Review 2 (Quality) → Review 3 (Final Gate)
+      → Package deliverable → Submit
+"""
 
 from __future__ import annotations
 
@@ -7,47 +13,24 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .config import Config
 from .models import Job
 from .claude_cli import ClaudeCLI
+from .job_router import classify, JobTier, RoutingResult
 
 
-# --- Prompts ---
+# --- Directory where templates and knowledge live ---
+_PKG_ROOT = Path(__file__).resolve().parent.parent
+TEMPLATES_DIR = _PKG_ROOT / "templates"
+KNOWLEDGE_DIR = _PKG_ROOT / "knowledge"
 
-WORK_SYSTEM = """You are an autonomous agent completing freelance work on market.near.ai.
-You have been awarded a job and must produce the deliverable.
 
-Your approach:
-1. Carefully read the job requirements
-2. Plan your approach
-3. Produce high-quality work that exceeds expectations
-4. Structure the output clearly with proper formatting
-
-Quality standards:
-- Be thorough and comprehensive
-- Use proper markdown formatting
-- Include citations/sources where relevant
-- If code: include comments, error handling, type hints
-- If research: include methodology, findings, analysis
-- If writing: proper structure, engaging, factual
-
-Output ONLY the deliverable content. No meta-commentary about the task."""
-
-WORK_USER = """Complete this job:
-
-Title: {title}
-Budget: {budget} NEAR
-Tags: {tags}
-
-Full Description:
-{description}
-
----
-
-Produce the complete deliverable now. Be thorough and comprehensive. The quality of your work directly affects your reputation on this marketplace."""
+# --- Review prompts (unchanged) ---
 
 REVIEW_1_REQUIREMENTS = """You are a strict quality reviewer for freelance deliverables.
 
@@ -101,13 +84,8 @@ REVISE_SYSTEM = """You are revising a deliverable based on review feedback.
 Apply the feedback precisely. Keep everything that was good. Fix what was flagged.
 Output ONLY the revised deliverable — complete, not a diff."""
 
-SIMPLIFY_CONTEXT = """This file is a deliverable for a freelance job on market.near.ai.
-Simplify it while preserving ALL functionality and content.
-The result will be submitted to a paying client."""
-
 
 def _truncate_at_line(text: str, max_chars: int) -> str:
-    """Truncate text at a newline boundary to avoid splitting mid-line."""
     if len(text) <= max_chars:
         return text
     cut = text.rfind("\n", 0, max_chars)
@@ -116,14 +94,12 @@ def _truncate_at_line(text: str, max_chars: int) -> str:
 
 def _extract_json(text: str) -> dict:
     """Extract JSON from text that may contain markdown or reasoning."""
-    # Try direct parse first
     text = text.strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try extracting from code block
     match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
     if match:
         try:
@@ -131,7 +107,6 @@ def _extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Try finding first { ... } block
     start = text.find("{")
     if start != -1:
         depth = 0
@@ -146,13 +121,11 @@ def _extract_json(text: str) -> dict:
                     except json.JSONDecodeError:
                         break
 
-    # Fallback — treat as failing review
     return {"score": 0.5, "pass": False, "feedback": text[:500]}
 
 
 @dataclass
 class ReviewResult:
-    """Result from a single review step."""
     stage: str
     score: float
     passed: bool
@@ -162,7 +135,6 @@ class ReviewResult:
 
 @dataclass
 class WorkResult:
-    """Result of completing a job."""
     job_id: str
     content: str
     content_hash: str
@@ -170,22 +142,20 @@ class WorkResult:
     model: str = ""
     reviews: list[ReviewResult] = field(default_factory=list)
     revisions: int = 0
+    tier: str = ""
+    workspace_files: list[str] = field(default_factory=list)
 
     @property
     def preview(self) -> str:
-        """First 200 chars of content."""
         return self.content[:200] + ("..." if len(self.content) > 200 else "")
 
 
 class WorkEngine:
-    """Uses Claude to complete jobs with a 3-stage review pipeline.
+    """Agentic work engine with tiered builders and 3-stage review.
 
     Pipeline:
-        Generate → Review 1 (Requirements) → Review 2 (Quality) → Review 3 (Final Gate)
-                     ↓ fail                     ↓ fail                ↓ fail
-                   Revise + retry             Revise + retry        Revise + retry
-
-    Max 2 revision attempts per review stage. If all 3 pass → ship.
+        Route → Setup workspace → Run builder agent → Code-simplify
+          → Review 1 → Review 2 → Review 3 → Package
     """
 
     MAX_REVISIONS_PER_STAGE = 2
@@ -194,37 +164,170 @@ class WorkEngine:
         self.config = config
         self.claude = ClaudeCLI(model=config.model, max_tokens=config.max_tokens)
 
-    def _make_result(
-        self,
-        job_id: str,
-        content: str,
-        reviews: list[ReviewResult] | None = None,
-        revisions: int = 0,
-    ) -> WorkResult:
-        """Build a WorkResult from raw text content."""
-        if not content:
-            raise RuntimeError(f"Empty response from Claude CLI for job {job_id}")
-        return WorkResult(
-            job_id=job_id,
-            content=content,
-            content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
-            tokens_used=0,
-            model=self.config.model,
-            reviews=reviews or [],
-            revisions=revisions,
-        )
+    # --- Workspace setup ---
 
-    def _job_prompt(self, job: Job) -> str:
-        """Build the user prompt for a job."""
-        return WORK_USER.format(
-            title=job.title,
-            budget=job.budget_near,
-            tags=", ".join(job.tags) if job.tags else "none",
-            description=job.description[:8000],
+    def _setup_workspace(self, job: Job, routing: RoutingResult) -> str:
+        """Create a temp workspace with job description, template, and knowledge."""
+        workspace = tempfile.mkdtemp(prefix=f"near_work_{routing.tier.value}_")
+
+        # Write job description
+        job_md = (
+            f"# Job Requirements\n\n"
+            f"**Title:** {job.title}\n"
+            f"**Budget:** {job.budget_near} NEAR\n"
+            f"**Tags:** {', '.join(job.tags) if job.tags else 'none'}\n\n"
+            f"## Description\n\n{job.description}\n"
         )
+        Path(workspace, "JOB.md").write_text(job_md)
+
+        # Copy template if applicable
+        if routing.template:
+            template_dir = TEMPLATES_DIR / routing.template
+            if template_dir.is_dir():
+                for item in template_dir.iterdir():
+                    dest = Path(workspace) / item.name
+                    if item.is_dir():
+                        shutil.copytree(item, dest)
+                    else:
+                        shutil.copy2(item, dest)
+
+        # Copy NEAR knowledge base
+        near_ref = KNOWLEDGE_DIR / "near-reference.md"
+        if near_ref.exists():
+            shutil.copy2(near_ref, Path(workspace, "NEAR-REFERENCE.md"))
+
+        return workspace
+
+    def _collect_deliverable(self, workspace: str, routing: RoutingResult) -> tuple[str, list[str]]:
+        """Collect the deliverable content from the workspace.
+
+        For text jobs: return content of DELIVERABLE.md
+        For code jobs: return concatenated file listing + key file contents
+        """
+        files = []
+        for root, dirs, filenames in os.walk(workspace):
+            # Skip node_modules, .git, __pycache__, dist, etc.
+            dirs[:] = [d for d in dirs if d not in {
+                "node_modules", ".git", "__pycache__", "dist", "build",
+                ".venv", "venv", ".tox", "coverage", ".mypy_cache",
+            }]
+            for f in filenames:
+                rel = os.path.relpath(os.path.join(root, f), workspace)
+                if not rel.startswith(".") or rel in {".gitignore", ".env.example"}:
+                    files.append(rel)
+
+        # For text tier, prefer DELIVERABLE.md
+        if routing.tier == JobTier.TEXT:
+            deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
+            if os.path.exists(deliverable_path):
+                content = Path(deliverable_path).read_text()
+                return content, files
+
+        # For code tiers, build a structured deliverable
+        parts = [f"# Deliverable: {routing.tier.value}\n\n"]
+        parts.append(f"## Files ({len(files)})\n\n")
+        for f in sorted(files):
+            parts.append(f"- `{f}`\n")
+        parts.append("\n")
+
+        # Include key files inline
+        key_files = ["README.md", "package.json", "pyproject.toml", "src/index.ts",
+                     "src/__init__.py", "Dockerfile", "manifest.json"]
+        for kf in key_files:
+            fp = os.path.join(workspace, kf)
+            if os.path.exists(fp):
+                content = Path(fp).read_text()
+                parts.append(f"## `{kf}`\n\n```\n{_truncate_at_line(content, 4000)}\n```\n\n")
+
+        # Include any other source files (up to a limit)
+        char_budget = 20000
+        for f in sorted(files):
+            if f in key_files or f in {"JOB.md", "NEAR-REFERENCE.md"}:
+                continue
+            fp = os.path.join(workspace, f)
+            if os.path.isfile(fp):
+                try:
+                    fc = Path(fp).read_text()
+                except (UnicodeDecodeError, PermissionError):
+                    continue
+                if len(fc) > 8000:
+                    fc = _truncate_at_line(fc, 8000) + "\n... (truncated)"
+                entry = f"## `{f}`\n\n```\n{fc}\n```\n\n"
+                if char_budget - len(entry) < 0:
+                    break
+                parts.append(entry)
+                char_budget -= len(entry)
+
+        return "".join(parts), files
+
+    # --- Agent execution ---
+
+    def _run_builder(self, job: Job, routing: RoutingResult, workspace: str) -> str:
+        """Run the appropriate builder agent in the workspace."""
+        prompt = (
+            f"Read JOB.md for requirements. "
+            f"You have NEAR-REFERENCE.md for protocol knowledge. "
+        )
+        if routing.template:
+            prompt += f"A '{routing.template}' template is pre-loaded — build on top of it. "
+        prompt += "Build the complete deliverable. Run tests if applicable."
+
+        try:
+            self.claude.run_agent(
+                agent=routing.agent,
+                prompt=prompt,
+                workdir=workspace,
+            )
+        except RuntimeError:
+            # Fallback: use prompt mode for text generation
+            return self._fallback_generate(job, workspace, routing)
+
+        content, files = self._collect_deliverable(workspace, routing)
+        return content
+
+    def _fallback_generate(self, job: Job, workspace: str, routing: RoutingResult) -> str:
+        """Fallback to prompt-mode text generation if agentic mode fails."""
+        system = (
+            "You are an autonomous agent completing freelance work on market.near.ai. "
+            "Produce high-quality work that exceeds expectations. "
+            "Use proper markdown formatting. Be thorough and comprehensive. "
+            "Output ONLY the deliverable content."
+        )
+        user = (
+            f"Complete this job:\n\n"
+            f"Title: {job.title}\n"
+            f"Budget: {job.budget_near} NEAR\n"
+            f"Tags: {', '.join(job.tags) if job.tags else 'none'}\n\n"
+            f"Description:\n{job.description[:8000]}\n\n"
+            f"Produce the complete deliverable now."
+        )
+        content = self.claude.create_message(system=system, user=user, max_tokens=self.config.max_tokens)
+
+        # Write it to workspace for consistency
+        Path(workspace, "DELIVERABLE.md").write_text(content)
+        return content
+
+    # --- Code simplification ---
+
+    def _simplify(self, job: Job, workspace: str, routing: RoutingResult) -> None:
+        """Run code-simplifier agent on workspace files."""
+        if routing.tier == JobTier.TEXT:
+            target = "DELIVERABLE.md"
+        else:
+            target = "all source files"
+
+        try:
+            self.claude.run_agent(
+                agent="code-simplifier",
+                prompt=f"Simplify {target} in this project. Keep all functionality intact.",
+                workdir=workspace,
+            )
+        except RuntimeError:
+            pass  # Simplification is optional — don't fail the job
+
+    # --- Review pipeline ---
 
     def _review_prompt(self, job: Job, deliverable: str) -> str:
-        """Build context for review prompts."""
         return (
             f"JOB TITLE: {job.title}\n"
             f"BUDGET: {job.budget_near} NEAR\n"
@@ -234,7 +337,6 @@ class WorkEngine:
         )
 
     def _run_review(self, stage: str, system: str, job: Job, deliverable: str) -> ReviewResult:
-        """Run a single review step."""
         raw_response = self.claude.create_message(
             system=system,
             user=self._review_prompt(job, deliverable),
@@ -245,21 +347,13 @@ class WorkEngine:
         passed = bool(parsed.get("pass", False)) or parsed.get("verdict") == "ship"
         feedback = parsed.get("feedback", "") or ""
         if not passed and not feedback:
-            # Collect any issue lists as feedback
             issues = parsed.get("missing", []) or parsed.get("issues", [])
             if issues:
                 feedback = "; ".join(str(i) for i in issues)
 
-        return ReviewResult(
-            stage=stage,
-            score=score,
-            passed=passed,
-            feedback=feedback,
-            raw=parsed,
-        )
+        return ReviewResult(stage=stage, score=score, passed=passed, feedback=feedback, raw=parsed)
 
     def _revise(self, job: Job, deliverable: str, feedback: str) -> str:
-        """Revise a deliverable based on review feedback."""
         prompt = (
             f"ORIGINAL JOB:\n{job.title}\n{job.description[:4000]}\n\n"
             f"CURRENT DELIVERABLE:\n{_truncate_at_line(deliverable, 8000)}\n\n"
@@ -267,127 +361,89 @@ class WorkEngine:
             f"Revise the deliverable to address all feedback. Output the complete revised version."
         )
         return self.claude.create_message(
-            system=REVISE_SYSTEM,
-            user=prompt,
-            max_tokens=self.config.max_tokens,
+            system=REVISE_SYSTEM, user=prompt, max_tokens=self.config.max_tokens,
         )
 
     def _run_stage(
-        self,
-        stage_name: str,
-        system_prompt: str,
-        job: Job,
-        deliverable: str,
-        reviews: list[ReviewResult],
+        self, stage_name: str, system_prompt: str, job: Job,
+        deliverable: str, reviews: list[ReviewResult],
     ) -> tuple[str, bool]:
-        """Run a review stage with up to MAX_REVISIONS_PER_STAGE retries.
-
-        Returns (possibly_revised_deliverable, passed).
-        """
         for attempt in range(1 + self.MAX_REVISIONS_PER_STAGE):
             review = self._run_review(stage_name, system_prompt, job, deliverable)
             reviews.append(review)
-
             if review.passed:
                 return deliverable, True
-
             if attempt < self.MAX_REVISIONS_PER_STAGE:
                 deliverable = self._revise(job, deliverable, review.feedback)
-
-        # Failed after all retries
         return deliverable, False
 
-    def _simplify(self, job: Job, deliverable: str) -> str:
-        """Run Claude Code's code-simplifier agent on the deliverable.
-
-        Writes deliverable to a temp file, runs the code-simplifier agent
-        in agentic mode, and reads back the simplified result.
-        """
-        # Determine file extension from job context
-        ext = ".md"
-        tags_lower = [t.lower() for t in (job.tags or [])]
-        if any(t in tags_lower for t in ("python", "py")):
-            ext = ".py"
-        elif any(t in tags_lower for t in ("javascript", "js", "typescript", "ts")):
-            ext = ".js"
-        elif any(t in tags_lower for t in ("rust", "rs")):
-            ext = ".rs"
-        elif any(t in tags_lower for t in ("solidity", "sol")):
-            ext = ".sol"
-
-        with tempfile.TemporaryDirectory(prefix="near_simplify_") as tmpdir:
-            filepath = os.path.join(tmpdir, f"deliverable{ext}")
-            with open(filepath, "w") as f:
-                f.write(deliverable)
-
-            try:
-                self.claude.run_agent(
-                    agent="code-simplifier",
-                    prompt=(
-                        f"Simplify the file 'deliverable{ext}' in the current directory. "
-                        f"This is a deliverable for: {job.title}. "
-                        f"Read it, simplify it, and write the result back to the same file."
-                    ),
-                    system=SIMPLIFY_CONTEXT,
-                    workdir=tmpdir,
-                )
-                with open(filepath) as f:
-                    simplified = f.read().strip()
-                return simplified if simplified else deliverable
-            except RuntimeError:
-                # If code-simplifier fails, return original
-                return deliverable
+    # --- Main pipeline ---
 
     def complete_job(self, job: Job) -> WorkResult:
-        """Complete a job through the full generate + simplify + 3-review pipeline."""
-        reviews: list[ReviewResult] = []
-        total_revisions = 0
+        """Complete a job through the full agentic pipeline."""
+        # Step 1: Route
+        routing = classify(job)
 
-        # Step 1: Generate initial deliverable
-        content = self.claude.create_message(
-            system=WORK_SYSTEM,
-            user=self._job_prompt(job),
-            max_tokens=self.config.max_tokens,
-        )
+        # Step 2: Setup workspace
+        workspace = self._setup_workspace(job, routing)
 
-        # Step 2: Claude Code simplification pass
-        content = self._simplify(job, content)
+        try:
+            # Step 3: Run builder agent
+            content = self._run_builder(job, routing, workspace)
 
-        # Step 3: Review 1 — Requirements check
-        content, passed_1 = self._run_stage(
-            "requirements", REVIEW_1_REQUIREMENTS, job, content, reviews,
-        )
-        total_revisions += sum(1 for r in reviews if not r.passed)
+            # Step 4: Code-simplify
+            self._simplify(job, workspace, routing)
 
-        # Step 4: Review 2 — Quality check
-        content, passed_2 = self._run_stage(
-            "quality", REVIEW_2_QUALITY, job, content, reviews,
-        )
-        total_revisions += sum(
-            1 for r in reviews if r.stage == "quality" and not r.passed
-        )
+            # Re-collect after simplification (files may have changed)
+            if routing.tier != JobTier.TEXT or not content:
+                content, files = self._collect_deliverable(workspace, routing)
+            else:
+                deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
+                if os.path.exists(deliverable_path):
+                    content = Path(deliverable_path).read_text()
+                files = []
 
-        # Step 5: Review 3 — Final gate
-        content, passed_3 = self._run_stage(
-            "final", REVIEW_3_FINAL, job, content, reviews,
-        )
-        total_revisions += sum(
-            1 for r in reviews if r.stage == "final" and not r.passed
-        )
+            # Step 5: Review pipeline
+            reviews: list[ReviewResult] = []
+            total_revisions = 0
 
-        return self._make_result(
-            job.job_id, content, reviews=reviews, revisions=total_revisions,
-        )
+            content, _ = self._run_stage(
+                "requirements", REVIEW_1_REQUIREMENTS, job, content, reviews,
+            )
+            total_revisions += sum(1 for r in reviews if not r.passed)
+
+            content, _ = self._run_stage(
+                "quality", REVIEW_2_QUALITY, job, content, reviews,
+            )
+            total_revisions += sum(
+                1 for r in reviews if r.stage == "quality" and not r.passed
+            )
+
+            content, _ = self._run_stage(
+                "final", REVIEW_3_FINAL, job, content, reviews,
+            )
+            total_revisions += sum(
+                1 for r in reviews if r.stage == "final" and not r.passed
+            )
+
+            return WorkResult(
+                job_id=job.job_id,
+                content=content,
+                content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
+                model=self.config.model,
+                reviews=reviews,
+                revisions=total_revisions,
+                tier=routing.tier.value,
+                workspace_files=files if routing.tier != JobTier.TEXT else [],
+            )
+        finally:
+            # Cleanup workspace
+            shutil.rmtree(workspace, ignore_errors=True)
 
     def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
-        """Handle a revision request from the requester, then simplify + re-run reviews."""
-        # First, revise based on requester feedback
+        """Handle a revision request from the requester."""
         revised = self._revise(job, original, feedback)
 
-        # Simplify pass
-        revised = self._simplify(job, revised)
-
-        # Then run it through all 3 reviews again
         reviews: list[ReviewResult] = []
         total_revisions = 0
 
@@ -410,8 +466,13 @@ class WorkEngine:
             1 for r in reviews if r.stage == "final" and not r.passed
         )
 
-        return self._make_result(
-            job.job_id, revised, reviews=reviews, revisions=total_revisions,
+        return WorkResult(
+            job_id=job.job_id,
+            content=revised,
+            content_hash=f"sha256:{hashlib.sha256(revised.encode()).hexdigest()}",
+            model=self.config.model,
+            reviews=reviews,
+            revisions=total_revisions,
         )
 
     async def complete_job_async(self, job: Job) -> WorkResult:
