@@ -32,14 +32,15 @@ FAILING_REVIEW = json.dumps({
 
 class WorkEngineTests(unittest.TestCase):
     def test_complete_job_all_reviews_pass(self) -> None:
-        """Generate + 3 passing reviews = ship without revisions."""
+        """Generate + simplify + 3 passing reviews = ship without revisions."""
         cfg = Config(market_api_key="m")
 
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
-            # First call = generate, next 3 = reviews (all pass)
+            # generate → simplify → review1 → review2 → review3
             mock_claude.create_message.side_effect = [
                 "# Guide\nAsync Python is great.",
+                "# Guide\nAsync Python is great.",  # simplify pass
                 PASSING_REVIEW,
                 PASSING_REVIEW,
                 PASSING_REVIEW,
@@ -62,6 +63,7 @@ class WorkEngineTests(unittest.TestCase):
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
                 "# Draft\nWeak content.",          # generate
+                "# Draft\nWeak content.",           # simplify pass
                 FAILING_REVIEW,                     # review 1 fails
                 "# Revised\nBetter content.",       # revision
                 PASSING_REVIEW,                     # review 1 passes
@@ -88,13 +90,14 @@ class WorkEngineTests(unittest.TestCase):
             self.assertIn("Empty response", str(ctx.exception))
 
     def test_handle_revision_runs_full_review_pipeline(self) -> None:
-        """Requester revision → revise → 3 review stages."""
+        """Requester revision → revise → simplify → 3 review stages."""
         cfg = Config(market_api_key="m")
 
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
                 "# Revised Guide\nNow with more detail.",  # revision
+                "# Revised Guide\nNow with more detail.",  # simplify pass
                 PASSING_REVIEW,                              # review 1
                 PASSING_REVIEW,                              # review 2
                 PASSING_REVIEW,                              # review 3

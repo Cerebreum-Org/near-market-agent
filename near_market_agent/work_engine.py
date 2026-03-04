@@ -99,6 +99,23 @@ REVISE_SYSTEM = """You are revising a deliverable based on review feedback.
 Apply the feedback precisely. Keep everything that was good. Fix what was flagged.
 Output ONLY the revised deliverable — complete, not a diff."""
 
+SIMPLIFY_SYSTEM = """You are a code simplification expert. Your job is to simplify and refine a deliverable.
+
+Rules:
+1. Remove unnecessary complexity, boilerplate, and verbose patterns
+2. Combine redundant logic, flatten excessive nesting
+3. Improve variable/function names for clarity
+4. Remove dead code, unused imports, redundant comments
+5. Prefer standard library solutions over custom implementations
+6. Keep ALL functionality intact — simplify, don't remove features
+7. If the deliverable is prose/documentation (not code), tighten the writing:
+   - Cut filler words and redundant sentences
+   - Merge overlapping sections
+   - Make examples more concise
+8. Output ONLY the simplified deliverable — complete, not a diff
+
+The goal: same functionality, fewer lines, clearer intent."""
+
 
 def _truncate_at_line(text: str, max_chars: int) -> str:
     """Truncate text at a newline boundary to avoid splitting mid-line."""
@@ -291,8 +308,22 @@ class WorkEngine:
         # Failed after all retries
         return deliverable, False
 
+    def _simplify(self, job: Job, deliverable: str) -> str:
+        """Run Claude Code simplification pass on the deliverable."""
+        prompt = (
+            f"JOB: {job.title}\n\n"
+            f"DELIVERABLE TO SIMPLIFY:\n{_truncate_at_line(deliverable, 12000)}\n\n"
+            f"Simplify this deliverable. Keep all functionality and content. "
+            f"Make it cleaner, tighter, and more professional."
+        )
+        return self.claude.create_message(
+            system=SIMPLIFY_SYSTEM,
+            user=prompt,
+            max_tokens=self.config.max_tokens,
+        )
+
     def complete_job(self, job: Job) -> WorkResult:
-        """Complete a job through the full generate + 3-review pipeline."""
+        """Complete a job through the full generate + simplify + 3-review pipeline."""
         reviews: list[ReviewResult] = []
         total_revisions = 0
 
@@ -303,13 +334,16 @@ class WorkEngine:
             max_tokens=self.config.max_tokens,
         )
 
-        # Step 2: Review 1 — Requirements check
+        # Step 2: Claude Code simplification pass
+        content = self._simplify(job, content)
+
+        # Step 3: Review 1 — Requirements check
         content, passed_1 = self._run_stage(
             "requirements", REVIEW_1_REQUIREMENTS, job, content, reviews,
         )
         total_revisions += sum(1 for r in reviews if not r.passed)
 
-        # Step 3: Review 2 — Quality check
+        # Step 4: Review 2 — Quality check
         content, passed_2 = self._run_stage(
             "quality", REVIEW_2_QUALITY, job, content, reviews,
         )
@@ -317,7 +351,7 @@ class WorkEngine:
             1 for r in reviews if r.stage == "quality" and not r.passed
         )
 
-        # Step 4: Review 3 — Final gate
+        # Step 5: Review 3 — Final gate
         content, passed_3 = self._run_stage(
             "final", REVIEW_3_FINAL, job, content, reviews,
         )
@@ -330,9 +364,12 @@ class WorkEngine:
         )
 
     def handle_revision(self, job: Job, original: str, feedback: str) -> WorkResult:
-        """Handle a revision request from the requester, then re-run reviews."""
+        """Handle a revision request from the requester, then simplify + re-run reviews."""
         # First, revise based on requester feedback
         revised = self._revise(job, original, feedback)
+
+        # Simplify pass
+        revised = self._simplify(job, revised)
 
         # Then run it through all 3 reviews again
         reviews: list[ReviewResult] = []
