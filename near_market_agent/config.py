@@ -17,6 +17,14 @@ def _env(name: str, default, cast=float):
         return default
 
 
+def _env_list(name: str, default: list[str] | None = None) -> list[str]:
+    """Read a comma-separated env var as a list."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default or []
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
 @dataclass
 class AgentCapabilities:
     """What this agent can do."""
@@ -42,6 +50,48 @@ class AgentCapabilities:
 
 
 @dataclass
+class TierConfig:
+    """Per-tier configuration for timeouts and model overrides."""
+    # Timeout in seconds for builder agent runs
+    text_timeout: int = 300        # Text jobs are simpler
+    package_timeout: int = 600     # Package builds need more time
+    service_timeout: int = 900     # Service builds are complex
+    system_timeout: int = 1200     # Multi-agent systems are the most complex
+
+    # Optional per-tier model overrides (empty = use default)
+    text_model: str = ""
+    package_model: str = ""
+    service_model: str = ""
+    system_model: str = ""
+
+    # Disabled tiers (won't bid on these)
+    disabled_tiers: list[str] = field(default_factory=list)
+
+    def timeout_for(self, tier: str) -> int:
+        """Get timeout in seconds for a given tier."""
+        return {
+            "text": self.text_timeout,
+            "package": self.package_timeout,
+            "service": self.service_timeout,
+            "system": self.system_timeout,
+        }.get(tier, self.package_timeout)
+
+    def model_for(self, tier: str, default: str) -> str:
+        """Get model for a given tier, falling back to default."""
+        override = {
+            "text": self.text_model,
+            "package": self.package_model,
+            "service": self.service_model,
+            "system": self.system_model,
+        }.get(tier, "")
+        return override or default
+
+    def is_disabled(self, tier: str) -> bool:
+        """Check if a tier is disabled."""
+        return tier in self.disabled_tiers
+
+
+@dataclass
 class Config:
     """Agent configuration loaded from environment."""
     # API keys
@@ -61,6 +111,9 @@ class Config:
     # LLM settings
     model: str = "claude-sonnet-4-20250514"
     max_tokens: int = 4096
+
+    # Per-tier settings
+    tiers: TierConfig = field(default_factory=TierConfig)
 
     # Capabilities
     capabilities: AgentCapabilities = field(default_factory=AgentCapabilities)
@@ -87,6 +140,17 @@ class Config:
             bid_confidence_threshold=_env("BID_THRESHOLD", 0.6),
             model=os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
             max_tokens=_env("MAX_TOKENS", 4096, int),
+            tiers=TierConfig(
+                text_timeout=_env("TIER_TEXT_TIMEOUT", 300, int),
+                package_timeout=_env("TIER_PACKAGE_TIMEOUT", 600, int),
+                service_timeout=_env("TIER_SERVICE_TIMEOUT", 900, int),
+                system_timeout=_env("TIER_SYSTEM_TIMEOUT", 1200, int),
+                text_model=os.environ.get("TIER_TEXT_MODEL", ""),
+                package_model=os.environ.get("TIER_PACKAGE_MODEL", ""),
+                service_model=os.environ.get("TIER_SERVICE_MODEL", ""),
+                system_model=os.environ.get("TIER_SYSTEM_MODEL", ""),
+                disabled_tiers=_env_list("DISABLED_TIERS"),
+            ),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             verbose=os.environ.get("VERBOSE", "").lower() in ("1", "true", "yes"),
             log_dir=os.environ.get("LOG_DIR", "logs"),
@@ -97,7 +161,6 @@ class Config:
         errors = []
         if not self.market_api_key:
             errors.append("NEAR_MARKET_API_KEY not set")
-        # anthropic_api_key no longer required — using Claude CLI
         if self.min_budget_near < 0:
             errors.append("MIN_BUDGET_NEAR must be >= 0")
         if self.max_concurrent_jobs < 1:
@@ -108,4 +171,8 @@ class Config:
             errors.append("BID_THRESHOLD must be between 0 and 1")
         if self.max_tokens < 1:
             errors.append("MAX_TOKENS must be >= 1")
+        valid_tiers = {"text", "package", "service", "system"}
+        for t in self.tiers.disabled_tiers:
+            if t not in valid_tiers:
+                errors.append(f"Invalid disabled tier: {t}")
         return errors

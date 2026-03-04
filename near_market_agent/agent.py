@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -12,12 +13,15 @@ from .config import Config
 from .logger import AgentLogger
 from .market_client import MarketClient, MarketAPIError
 from .job_evaluator import JobEvaluator
-from .work_engine import WorkEngine
+from .work_engine import WorkEngine, cleanup_stale_workspaces
 from .models import Job, Bid, BidStatus, JobEvaluation
 
 
 class MarketAgent:
     """Autonomous agent that finds, bids on, and completes jobs on market.near.ai."""
+
+    # Max seen jobs before eviction (keeps oldest out)
+    MAX_SEEN_JOBS = 10_000
 
     def __init__(self, config: Config):
         self.config = config
@@ -26,8 +30,8 @@ class MarketAgent:
         self.evaluator = JobEvaluator(config)
         self.engine = WorkEngine(config)
 
-        # State tracking
-        self._seen_jobs: set[str] = set()
+        # State tracking — OrderedDict preserves insertion order for eviction
+        self._seen_jobs: OrderedDict[str, bool] = OrderedDict()
         self._bid_jobs: set[str] = set()
         self._active_bids: dict[str, Bid] = {}
         self._active_jobs: dict[str, Job] = {}
@@ -42,6 +46,11 @@ class MarketAgent:
         self.log.action("Agent starting up")
         self._load_state()
         self._running = True
+
+        # Clean up stale workspaces from previous crashes/OOM kills
+        cleaned = cleanup_stale_workspaces(max_age_hours=24)
+        if cleaned:
+            self.log.action(f"Cleaned {cleaned} stale workspace(s) from /tmp")
 
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -61,6 +70,7 @@ class MarketAgent:
                 try:
                     await self._check_active_bids()
                     await self._check_active_jobs()
+                    await self._process_pending_revisions()
 
                     if len(self._active_jobs) < self.config.max_concurrent_jobs:
                         await self._scan_and_bid()
@@ -141,10 +151,12 @@ class MarketAgent:
             raise SystemExit(1)
 
     async def _fetch_open_jobs(self) -> list[Job]:
-        """Fetch all open standard jobs with pagination."""
+        """Fetch ALL open standard jobs with full pagination (no cap)."""
         all_jobs: list[Job] = []
         offset = 0
-        while offset <= 1000:
+        max_pages = 50  # Safety cap: 50 * 100 = 5000 jobs max
+
+        while True:
             batch = await self.client.list_jobs(
                 status="open", job_type="standard",
                 sort="budget_amount", order="desc",
@@ -154,12 +166,14 @@ class MarketAgent:
                 break
             all_jobs.extend(batch)
             if len(batch) < 100:
-                break
+                break  # Last page
             offset += 100
+            max_pages -= 1
+            if max_pages <= 0:
+                self.log.warn(f"Hit safety pagination cap at {len(all_jobs)} jobs")
+                break
             await asyncio.sleep(0.5)
 
-        if offset > 1000:
-            self.log.warn(f"Hit pagination cap at {len(all_jobs)} jobs, some may be missed")
         return all_jobs
 
     async def _scan_and_bid(self):
@@ -174,10 +188,10 @@ class MarketAgent:
         self.log.info(f"Assessing {len(new_jobs)} new jobs")
         assessments = await self.evaluator.batch_evaluate_async(new_jobs)
 
-        # Mark all as seen; cap at 10k by trimming oldest half
-        self._seen_jobs.update(j.job_id for j in new_jobs)
-        if len(self._seen_jobs) > 10_000:
-            self._seen_jobs = set(list(self._seen_jobs)[5_000:])
+        # Mark all as seen with ordered eviction (FIFO)
+        for j in new_jobs:
+            self._seen_jobs[j.job_id] = True
+        self._evict_seen_jobs()
 
         # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
         bidworthy = sorted(
@@ -204,6 +218,11 @@ class MarketAgent:
                 self.log.warn(f"Assessed job {ev.job_id} vanished from job list, skipping bid")
                 continue
             await self._place_bid(job, ev)
+
+    def _evict_seen_jobs(self):
+        """Evict oldest entries when seen_jobs exceeds MAX_SEEN_JOBS."""
+        while len(self._seen_jobs) > self.MAX_SEEN_JOBS:
+            self._seen_jobs.popitem(last=False)  # Remove oldest (FIFO)
 
     async def _place_bid(self, job: Job, assessment: JobEvaluation):
         amount = str(assessment.suggested_bid_amount or job.budget_near)
@@ -294,7 +313,7 @@ class MarketAgent:
             await self._do_work(job, assignment_id)
 
     async def _check_active_jobs(self):
-        """Check on jobs we're currently working on."""
+        """Check on jobs we're currently working on and detect revision requests."""
         to_remove: list[str] = []
         for job_id, job in list(self._active_jobs.items()):
             try:
@@ -302,6 +321,8 @@ class MarketAgent:
                 if updated.my_assignments:
                     for asn in updated.my_assignments:
                         status = asn.get("status", "")
+                        assignment_id = asn.get("assignment_id", "")
+
                         if status == "accepted":
                             self.log.action(f"Work ACCEPTED on: {updated.title[:50]}", job_id=job_id)
                             self._completed.add(job_id)
@@ -309,7 +330,9 @@ class MarketAgent:
                         elif status == "submitted":
                             self.log.info(f"Waiting for review: {updated.title[:50]}", job_id=job_id)
                         elif status == "in_progress" and asn.get("deliverable"):
-                            self._handle_revision_request(updated, asn, job_id)
+                            # Revision requested — queue it
+                            if assignment_id and assignment_id not in self._revised_assignments:
+                                self._queue_revision(updated, assignment_id, asn)
                         elif status == "disputed":
                             self.log.warn(f"Work DISPUTED on: {updated.title[:50]}", job_id=job_id)
                         elif status == "cancelled":
@@ -327,23 +350,49 @@ class MarketAgent:
         for job_id in to_remove:
             self._active_jobs.pop(job_id, None)
 
-    def _handle_revision_request(self, job: Job, assignment: dict, job_id: str):
-        """Queue a revision if we haven't already revised this assignment."""
-        assignment_id = assignment.get("assignment_id")
-        if not assignment_id or assignment_id in self._revised_assignments:
-            return
-
-        feedback = ""
-        # Fetch feedback asynchronously — this is called from an async context
-        # but the actual revision is triggered via _do_revision in the caller.
-        # For now, store the info and let _check_active_jobs handle it.
+    def _queue_revision(self, job: Job, assignment_id: str, assignment: dict):
+        """Queue a revision request for processing."""
         self.log.action(
             f"Revision requested for: {job.title[:50]}",
-            job_id=job_id,
+            job_id=job.job_id, assignment_id=assignment_id,
         )
-        # The revision will be handled by storing the assignment_id
-        self._pending_revisions = getattr(self, '_pending_revisions', [])
-        self._pending_revisions.append((job, assignment_id, assignment.get("deliverable", "")))
+        if not hasattr(self, '_pending_revisions'):
+            self._pending_revisions: list[tuple[Job, str, str]] = []
+        self._pending_revisions.append(
+            (job, assignment_id, assignment.get("deliverable", ""))
+        )
+
+    async def _process_pending_revisions(self):
+        """Process any pending revision requests."""
+        if not hasattr(self, '_pending_revisions') or not self._pending_revisions:
+            return
+
+        revisions = self._pending_revisions[:]
+        self._pending_revisions.clear()
+
+        for job, assignment_id, original_deliverable in revisions:
+            if assignment_id in self._revised_assignments:
+                continue
+
+            # Fetch feedback from assignment messages
+            feedback = await self._fetch_revision_feedback(job, assignment_id)
+            if not feedback:
+                feedback = "The requester has requested revisions. Please improve the deliverable."
+
+            self._revised_assignments.add(assignment_id)
+            await self._do_revision(job, assignment_id, original_deliverable, feedback)
+
+    async def _fetch_revision_feedback(self, job: Job, assignment_id: str) -> str:
+        """Fetch revision feedback from assignment messages."""
+        try:
+            messages = await self.client.get_assignment_messages(assignment_id, limit=10)
+            # Get the most recent non-agent message (from the requester)
+            for msg in reversed(messages):
+                if msg.sender_agent_id != self._agent_id:
+                    return msg.content
+        except MarketAPIError as e:
+            self.log.warn(f"Failed to fetch revision feedback: {e}", job_id=job.job_id)
+        return ""
 
     async def _do_work(self, job: Job, assignment_id: str):
         """Complete a job and submit the deliverable."""
@@ -364,7 +413,7 @@ class MarketAgent:
             self.log.error(f"Failed to complete/submit work: {e}", job_id=job.job_id)
 
     async def _do_revision(self, job: Job, assignment_id: str, original: str, feedback: str):
-        """Handle a revision request -- revise and resubmit."""
+        """Handle a revision request — revise and resubmit."""
         self.log.action(f"Revising: {job.title[:50]}", job_id=job.job_id, feedback=feedback[:200])
 
         if self.config.dry_run:
@@ -398,7 +447,7 @@ class MarketAgent:
 
     def _save_state(self):
         state = {
-            "seen_jobs": list(self._seen_jobs),
+            "seen_jobs": list(self._seen_jobs.keys()),
             "bid_jobs": list(self._bid_jobs),
             "active_bids": {k: v.model_dump(mode="json") for k, v in self._active_bids.items()},
             "active_jobs": list(self._active_jobs.keys()),
@@ -416,7 +465,10 @@ class MarketAgent:
             return
         try:
             state = json.loads(self._state_file.read_text(encoding="utf-8"))
-            self._seen_jobs = set(state.get("seen_jobs", []))
+            # Restore seen_jobs as OrderedDict (preserves insertion order)
+            self._seen_jobs = OrderedDict(
+                (jid, True) for jid in state.get("seen_jobs", [])
+            )
             self._bid_jobs = set(state.get("bid_jobs", []))
             self._completed = set(state.get("completed", []))
             self._revised_assignments = set(state.get("revised_assignments", []))

@@ -10,14 +10,19 @@ to let Claude Code read/edit files, run commands, etc.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import pty
 import subprocess
 import tempfile
 
+log = logging.getLogger(__name__)
+
 
 class ClaudeCLI:
     """Wrapper around Claude Code CLI supporting prompt and agentic modes."""
+
+    DEFAULT_TIMEOUT = 600  # 10 minutes
 
     def __init__(self, model: str = "sonnet", max_tokens: int = 4096):
         self.model = model
@@ -31,6 +36,8 @@ class ClaudeCLI:
         agent: str | None = None,
         workdir: str | None = None,
         allowed_tools: list[str] | None = None,
+        timeout: int | None = None,
+        model: str | None = None,
     ) -> str:
         """Run a prompt through claude CLI and return text output.
 
@@ -41,11 +48,16 @@ class ClaudeCLI:
             agent: Agent name (e.g. 'code-simplifier'). Enables agentic mode.
             workdir: Working directory for agentic mode.
             allowed_tools: List of allowed tools for agentic mode.
+            timeout: Timeout in seconds (overrides DEFAULT_TIMEOUT).
+            model: Model override (uses self.model if not specified).
         """
+        effective_model = model or self.model
+        effective_timeout = timeout or self.DEFAULT_TIMEOUT
+
         cmd = [
             "claude",
             "-p",
-            "--model", self.model,
+            "--model", effective_model,
             "--output-format", "text",
         ]
 
@@ -59,7 +71,6 @@ class ClaudeCLI:
         if system and not agent:
             cmd.extend(["--system-prompt", system])
         elif system and agent:
-            # With agents, append system context as part of the prompt
             cmd.extend(["--append-system-prompt", system])
 
         cmd.append(prompt)
@@ -78,7 +89,14 @@ class ClaudeCLI:
             os.close(slave_fd)
             slave_fd = -1
 
-            stdout, stderr = proc.communicate(timeout=600)
+            stdout, stderr = proc.communicate(timeout=effective_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise RuntimeError(
+                f"claude CLI timed out after {effective_timeout}s "
+                f"(agent={agent}, model={effective_model})"
+            )
         finally:
             if slave_fd != -1:
                 os.close(slave_fd)
@@ -98,10 +116,13 @@ class ClaudeCLI:
         agent: str | None = None,
         workdir: str | None = None,
         allowed_tools: list[str] | None = None,
+        timeout: int | None = None,
+        model: str | None = None,
     ) -> str:
         """Async version — runs in a thread."""
         return await asyncio.to_thread(
-            self._run, prompt, system, max_tokens, agent, workdir, allowed_tools,
+            self._run, prompt, system, max_tokens, agent, workdir,
+            allowed_tools, timeout, model,
         )
 
     def create_message(
@@ -109,17 +130,19 @@ class ClaudeCLI:
         system: str,
         user: str,
         max_tokens: int | None = None,
+        timeout: int | None = None,
     ) -> str:
         """Prompt mode — returns raw text."""
-        return self._run(user, system=system, max_tokens=max_tokens)
+        return self._run(user, system=system, max_tokens=max_tokens, timeout=timeout)
 
     async def create_message_async(
         self,
         system: str,
         user: str,
         max_tokens: int | None = None,
+        timeout: int | None = None,
     ) -> str:
-        return await self._run_async(user, system=system, max_tokens=max_tokens)
+        return await self._run_async(user, system=system, max_tokens=max_tokens, timeout=timeout)
 
     def run_agent(
         self,
@@ -128,6 +151,8 @@ class ClaudeCLI:
         system: str | None = None,
         workdir: str | None = None,
         allowed_tools: list[str] | None = None,
+        timeout: int | None = None,
+        model: str | None = None,
     ) -> str:
         """Agentic mode — Claude Code with tools, file access, etc."""
         return self._run(
@@ -136,6 +161,8 @@ class ClaudeCLI:
             agent=agent,
             workdir=workdir,
             allowed_tools=allowed_tools,
+            timeout=timeout,
+            model=model,
         )
 
     async def run_agent_async(
@@ -145,6 +172,8 @@ class ClaudeCLI:
         system: str | None = None,
         workdir: str | None = None,
         allowed_tools: list[str] | None = None,
+        timeout: int | None = None,
+        model: str | None = None,
     ) -> str:
         return await self._run_async(
             prompt,
@@ -152,13 +181,12 @@ class ClaudeCLI:
             agent=agent,
             workdir=workdir,
             allowed_tools=allowed_tools,
+            timeout=timeout,
+            model=model,
         )
 
     def simplify_file(self, file_path: str) -> str:
-        """Run the code-simplifier agent on a file and return simplified content.
-
-        Writes the file, runs code-simplifier in its directory, reads result back.
-        """
+        """Run the code-simplifier agent on a file and return simplified content."""
         workdir = os.path.dirname(os.path.abspath(file_path))
         filename = os.path.basename(file_path)
 

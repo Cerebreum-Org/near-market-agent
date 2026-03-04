@@ -8,6 +8,7 @@ import json
 from .config import Config
 from .models import Job, JobEvaluation
 from .claude_cli import ClaudeCLI
+from .json_utils import extract_json
 from .sanitize import sanitize_job
 
 
@@ -55,44 +56,8 @@ Description:
 {description}"""
 
 
-def _extract_json(text: str) -> dict | None:
-    """Extract a JSON object from text that may contain surrounding prose.
-
-    Tries in order:
-    1. Direct parse (pure JSON)
-    2. Markdown fenced block (```json ... ```)
-    3. First { ... } block in the text
-    """
-    text = text.strip()
-
-    # 1. Direct parse
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # 2. Markdown fences
-    if "```" in text:
-        parts = text.split("```")
-        for part in parts[1::2]:  # odd-indexed parts are inside fences
-            content = part.strip()
-            if content.startswith("json"):
-                content = content[4:].strip()
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                continue
-
-    # 3. Find first { ... } block (greedy from first { to last })
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            pass
-
-    return None
+# Keep backward-compatible name for tests that import _extract_json
+_extract_json = extract_json
 
 
 def _skip_result(job_id: str, reason: str) -> JobEvaluation:
@@ -118,11 +83,17 @@ class JobEvaluator:
         self.config = config
         self.claude = ClaudeCLI(model=config.model)
 
-    def evaluate_job(self, job: Job) -> JobEvaluation:
-        """Assess a single job and return scoring + proposal."""
-        preflight = self._preflight_filter(job)
-        if preflight:
-            return _skip_result(job.job_id, preflight)
+    def evaluate_job(self, job: Job, *, skip_preflight: bool = False) -> JobEvaluation:
+        """Assess a single job and return scoring + proposal.
+
+        Args:
+            job: The job to evaluate.
+            skip_preflight: If True, skip preflight filter (already done by caller).
+        """
+        if not skip_preflight:
+            preflight = self._preflight_filter(job)
+            if preflight:
+                return _skip_result(job.job_id, preflight)
 
         safe_title, safe_desc = sanitize_job(job.title, job.description)
 
@@ -145,12 +116,10 @@ class JobEvaluator:
         if not text:
             return _skip_result(job.job_id, "Empty LLM response")
 
-        # Extract JSON from response — Claude CLI may include reasoning before/after JSON
-        data = _extract_json(text)
+        data = extract_json(text, fallback=None)
         if data is None:
             return _skip_result(job.job_id, f"Failed to parse LLM response: {text[:200]}")
 
-        # Clamp score to [0, 1]
         try:
             raw_score = float(data.get("score", 0) or 0)
         except (TypeError, ValueError):
@@ -186,27 +155,28 @@ class JobEvaluator:
         if job.budget_near < self.config.min_budget_near:
             return f"Budget too low ({job.budget_near} < {self.config.min_budget_near} NEAR)"
 
+        # --- Check disabled tiers ---
+        from .job_router import classify
+        routing = classify(job)
+        if self.config.tiers.is_disabled(routing.tier.value):
+            return f"Tier {routing.tier.value} is disabled"
+
         # --- Platform-specific jobs we can't do ---
-        # GPT Store / Custom GPT — requires OpenAI account
         gpt_signals = ["custom gpt", "gpt store", "gpt -", "chatgpt plugin",
                         "openai plugin", "gpts"]
         for sig in gpt_signals:
             if sig in title_lower:
                 return f"GPT Store/plugin job (matched: {sig})"
 
-        # AutoGPT plugins — requires AutoGPT ecosystem
         if "autogpt" in title_lower:
             return "AutoGPT plugin job"
 
-        # Poe bots — requires Poe platform
         if "poe -" in title_lower or "poe bot" in title_lower:
             return "Poe platform job"
 
-        # HuggingFace Spaces — requires HF account + deployment
         if "huggingface" in title_lower or "hugging face" in title_lower:
             return "HuggingFace platform job"
 
-        # Perplexity — platform-specific
         if "perplexity" in title_lower:
             return "Perplexity platform job"
 
@@ -246,29 +216,23 @@ class JobEvaluator:
                 return f"Social media/account job (matched: {signal})"
 
         # --- Low-value spam patterns ---
-        # "v2" / "v3" / "v4" bulk-posted jobs (marketplace spam — identical templates)
         if " v2" in job.title or " v3" in job.title or " v4" in job.title:
-            # Allow high-budget v2/v3 jobs (competitions etc)
             if job.budget_near < 15:
                 return f"Low-budget template job ({job.budget_near} NEAR, versioned)"
 
-        # npm/pypi package spam — hundreds of identical "build X package" at 1-8 NEAR
         if ("npm package" in title_lower or "pypi package" in title_lower
                 or "npm package" in desc_lower):
             if job.budget_near < 10:
                 return f"Low-budget package job ({job.budget_near} NEAR)"
 
-        # MCP server jobs — platform-specific busywork
         if "mcp server" in title_lower:
             if job.budget_near < 10:
                 return f"Low-budget MCP server job ({job.budget_near} NEAR)"
 
-        # LangChain tool jobs — low-value integrations
         if "langchain" in title_lower:
             if job.budget_near < 10:
                 return f"Low-budget LangChain job ({job.budget_near} NEAR)"
 
-        # Low-budget bot/extension/action jobs
         bot_patterns = ["discord bot", "telegram bot", "slack bot",
                         "chrome extension", "vs code extension",
                         "github action", "openclaw skill"]
@@ -276,24 +240,18 @@ class JobEvaluator:
             if pat in title_lower and job.budget_near < 10:
                 return f"Low-budget {pat} job ({job.budget_near} NEAR)"
 
-        # "Create GPT" in title but not caught by the GPT Store filter above
         if "create gpt" in title_lower or "gpt:" in title_lower:
             return "GPT creation job"
 
-        # --- Oversaturated jobs (too many bids) ---
         if (job.bid_count or 0) > 10:
             return f"Too many existing bids ({job.bid_count})"
 
-        # --- Minimum effective budget ---
-        # Below 5 NEAR isn't worth the compute to evaluate
         if job.budget_near < 5:
             return f"Budget below effective minimum ({job.budget_near} NEAR)"
 
-        # --- YouTube / course creation ---
         if "youtube" in combined or "free course" in combined or "online course" in combined:
             return "Course/YouTube creation job"
 
-        # --- Harmful/troll ---
         if "warhead" in title_lower or "nuclear warhead" in desc_lower:
             return "Obviously harmful/troll job"
 
@@ -310,7 +268,11 @@ class JobEvaluator:
     async def batch_evaluate_async(
         self, jobs: list[Job], max_concurrent: int = 5
     ) -> list[JobEvaluation]:
-        """Assess jobs concurrently with a semaphore to avoid rate limits."""
+        """Assess jobs concurrently with a semaphore to avoid rate limits.
+
+        Preflight runs first (instant), then LLM evaluation runs with
+        skip_preflight=True to avoid redundant filtering.
+        """
         sem = asyncio.Semaphore(max_concurrent)
 
         async def _assess(job: Job) -> JobEvaluation:
@@ -318,9 +280,12 @@ class JobEvaluator:
             preflight = self._preflight_filter(job)
             if preflight:
                 return _skip_result(job.job_id, preflight)
+            # LLM evaluation — skip preflight since we already ran it
             async with sem:
                 try:
-                    return await asyncio.to_thread(self.evaluate_job, job)
+                    return await asyncio.to_thread(
+                        self.evaluate_job, job, skip_preflight=True,
+                    )
                 except Exception as e:
                     return _skip_result(job.job_id, f"Assessment error: {e}")
 

@@ -5,18 +5,24 @@ Run with: uv run pytest tests/test_integration.py -v
 """
 
 import asyncio
+import glob
 import json
 import os
+import shutil
+import tempfile
+import time
 import pytest
+from collections import OrderedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime, timezone, timedelta
 
-from near_market_agent.config import Config
+from near_market_agent.config import Config, TierConfig
 from near_market_agent.models import Job, JobType, JobStatus, Bid, BidStatus
 from near_market_agent.market_client import MarketClient
 from near_market_agent.job_evaluator import JobEvaluator
 from near_market_agent.job_router import classify, JobTier
-from near_market_agent.work_engine import WorkEngine, _extract_json
+from near_market_agent.json_utils import extract_json
+from near_market_agent.work_engine import WorkEngine, cleanup_stale_workspaces
 
 
 def _make_job(**overrides) -> Job:
@@ -155,25 +161,35 @@ class TestJsonExtraction:
 
     def test_pure_json(self):
         text = '{"score": 0.8, "pass": true, "feedback": "good"}'
-        result = _extract_json(text)
+        result = extract_json(text)
         assert result["score"] == 0.8
         assert result["pass"] is True
 
     def test_json_in_markdown(self):
         text = 'Here is my review:\n```json\n{"score": 0.9, "pass": true}\n```\nDone.'
-        result = _extract_json(text)
+        result = extract_json(text)
         assert result["score"] == 0.9
 
     def test_json_with_surrounding_text(self):
         text = 'After careful review, {"score": 0.7, "pass": true, "feedback": "ok"} is my assessment.'
-        result = _extract_json(text)
+        result = extract_json(text)
         assert result["score"] == 0.7
 
     def test_invalid_json_returns_fallback(self):
         text = "This is not JSON at all, just plain text reasoning."
-        result = _extract_json(text)
+        result = extract_json(text)
         assert result["score"] == 0.5
         assert result["pass"] is False
+
+    def test_custom_fallback(self):
+        text = "not json"
+        result = extract_json(text, fallback={"custom": True})
+        assert result["custom"] is True
+
+    def test_none_fallback_returns_none(self):
+        text = "not json"
+        result = extract_json(text, fallback=None)
+        assert result is None
 
 
 class TestWorkspaceSetup:
@@ -277,3 +293,143 @@ class TestMarketClientIntegration:
             await client.close()
             assert client._client.is_closed
         asyncio.run(_test())
+
+
+class TestTierConfig:
+    """Test per-tier configuration."""
+
+    def test_timeout_for_each_tier(self):
+        tc = TierConfig()
+        assert tc.timeout_for("text") == 300
+        assert tc.timeout_for("package") == 600
+        assert tc.timeout_for("service") == 900
+        assert tc.timeout_for("system") == 1200
+        assert tc.timeout_for("unknown") == 600  # fallback
+
+    def test_model_override(self):
+        tc = TierConfig(text_model="claude-haiku")
+        assert tc.model_for("text", "sonnet") == "claude-haiku"
+        assert tc.model_for("package", "sonnet") == "sonnet"  # no override
+
+    def test_disabled_tiers(self):
+        tc = TierConfig(disabled_tiers=["system"])
+        assert tc.is_disabled("system") is True
+        assert tc.is_disabled("text") is False
+
+    def test_config_from_env_tiers(self):
+        """TierConfig loads from environment variables."""
+        with patch.dict(os.environ, {
+            "TIER_TEXT_TIMEOUT": "120",
+            "TIER_PACKAGE_MODEL": "claude-opus",
+            "DISABLED_TIERS": "system,service",
+        }):
+            config = Config.from_env()
+            assert config.tiers.text_timeout == 120
+            assert config.tiers.package_model == "claude-opus"
+            assert config.tiers.disabled_tiers == ["system", "service"]
+
+
+class TestStaleWorkspaceCleanup:
+    """Test temp dir cleanup on startup."""
+
+    def test_cleans_old_workspaces(self):
+        tmp = tempfile.gettempdir()
+        # Create a fake stale workspace
+        stale_dir = tempfile.mkdtemp(prefix="near_work_text_", dir=tmp)
+        # Set mtime to 48 hours ago
+        old_time = time.time() - (48 * 3600)
+        os.utime(stale_dir, (old_time, old_time))
+
+        cleaned = cleanup_stale_workspaces(max_age_hours=24)
+        assert cleaned >= 1
+        assert not os.path.exists(stale_dir)
+
+    def test_keeps_recent_workspaces(self):
+        tmp = tempfile.gettempdir()
+        recent_dir = tempfile.mkdtemp(prefix="near_work_package_", dir=tmp)
+        # mtime is now — should not be cleaned
+
+        cleaned = cleanup_stale_workspaces(max_age_hours=24)
+        assert os.path.exists(recent_dir)
+
+        # Cleanup our test dir
+        shutil.rmtree(recent_dir, ignore_errors=True)
+
+
+class TestDotfileInclusion:
+    """Test that important dotfiles are included in deliverables."""
+
+    def test_eslintrc_included(self):
+        config = Config(market_api_key="test")
+        engine = WorkEngine(config)
+        assert engine._should_include_file(".eslintrc.json")
+        assert engine._should_include_file(".prettierrc")
+        assert engine._should_include_file(".npmrc")
+        assert engine._should_include_file(".github/workflows/ci.yml")
+
+    def test_random_dotfiles_excluded(self):
+        config = Config(market_api_key="test")
+        engine = WorkEngine(config)
+        assert not engine._should_include_file(".DS_Store")
+        assert not engine._should_include_file(".secret_key")
+
+    def test_gitignore_included(self):
+        config = Config(market_api_key="test")
+        engine = WorkEngine(config)
+        assert engine._should_include_file(".gitignore")
+        assert engine._should_include_file(".env.example")
+
+
+class TestWorkResultSerialization:
+    """Test WorkResult can be serialized to dict."""
+
+    def test_to_dict(self):
+        from near_market_agent.work_engine import WorkResult, ReviewResult
+        result = WorkResult(
+            job_id="j1",
+            content="test content",
+            content_hash="sha256:abc",
+            tier="package",
+            reviews=[
+                ReviewResult(stage="requirements", score=0.9, passed=True, feedback="good"),
+            ],
+        )
+        d = result.to_dict()
+        assert d["job_id"] == "j1"
+        assert d["tier"] == "package"
+        assert len(d["reviews"]) == 1
+        assert d["reviews"][0]["stage"] == "requirements"
+        # Should be JSON-serializable
+        json.dumps(d)
+
+
+class TestEvaluatorSkipPreflight:
+    """Test that batch_evaluate_async doesn't double-run preflight."""
+
+    def test_skip_preflight_flag(self):
+        """evaluate_job with skip_preflight=True skips the filter."""
+        job = _make_job(budget_amount="0.1")  # Would fail preflight
+        evaluator = JobEvaluator(Config(market_api_key="test", min_budget_near=5.0))
+
+        # With preflight: should skip due to budget
+        result = evaluator.evaluate_job(job)
+        assert not result.should_bid
+        assert "Budget" in result.reasoning
+
+    @patch("near_market_agent.job_evaluator.ClaudeCLI")
+    def test_skip_preflight_reaches_llm(self, MockCLI):
+        """With skip_preflight=True, low-budget job reaches LLM instead of being filtered."""
+        mock_claude = MockCLI.return_value
+        mock_claude.create_message.return_value = json.dumps({
+            "score": 0.8, "should_bid": True, "reasoning": "looks good",
+            "category": "code", "proposal_draft": "I can do this",
+        })
+
+        job = _make_job(budget_amount="0.1")
+        evaluator = JobEvaluator(Config(market_api_key="test", min_budget_near=5.0))
+
+        result = evaluator.evaluate_job(job, skip_preflight=True)
+        # Should reach the LLM call instead of preflight filtering
+        assert result.should_bid is True
+        assert "looks good" in result.reasoning
+        mock_claude.create_message.assert_called_once()

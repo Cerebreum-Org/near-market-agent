@@ -9,7 +9,8 @@ from unittest.mock import patch, MagicMock
 
 from near_market_agent.config import Config
 from near_market_agent.models import Job
-from near_market_agent.work_engine import WorkEngine, WorkResult, _extract_json
+from near_market_agent.work_engine import WorkEngine, WorkResult
+from near_market_agent.json_utils import extract_json as _extract_json
 
 
 def _job(**overrides):
