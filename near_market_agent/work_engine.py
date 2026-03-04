@@ -1,12 +1,20 @@
-"""Agentic work completion engine with deep research, tiered builders, and 3-stage review.
+"""Agentic work completion engine with execution validation, publish step, and cost-aware pipeline.
 
-Pipeline:
-    Job → Route (classify tier) → Deep Research (web search, package lookup, docs)
-      → Setup workspace (with RESEARCH.md) → Run builder agent → Code-simplify
-      → Alignment check → Fix gaps (if any) → Code-simplify → 3x Review → Submit
+Full pipeline (≥3 NEAR):
+    Route → Research → Checkpoint 1 → Setup workspace → Build → Run tests
+      → Fix test failures → Simplify → Checkpoint 2 (grounded) → Fix gaps
+      → Simplify → Checkpoint 3 → 3x Review → Publish artifacts → Submit
 
-Code-simplifier runs continuously: after initial build, after each alignment fix,
-and before final review — ensuring clean, maintainable code at every stage.
+Lightweight pipeline (<3 NEAR):
+    Route → Research → Setup workspace → Build → Run tests → Fix failures
+      → Checkpoint 2 (grounded) → Fix gaps → Simplify (once) → Checkpoint 3
+      → 3x Review → Publish → Submit
+
+Key features:
+    - Execution validation: actually runs npm test / pytest / cargo test
+    - Grounded alignment: feeds real test results into alignment checks
+    - Publish step: creates npm tarballs / Python wheels when needed
+    - Cost-aware: skips expensive LLM calls for cheap jobs
 """
 
 from __future__ import annotations
@@ -16,7 +24,9 @@ import glob
 import hashlib
 import logging
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -143,6 +153,22 @@ def cleanup_stale_workspaces(max_age_hours: int = 24) -> int:
 
 
 @dataclass
+class ExecutionResult:
+    """Result from running tests/build validation in the workspace."""
+    passed: bool
+    framework: str  # "npm", "pytest", "cargo", "none"
+    output: str
+    test_count: int = 0
+    fail_count: int = 0
+
+    def summary(self) -> str:
+        if self.framework == "none":
+            return "No test framework detected"
+        status = "PASSED" if self.passed else "FAILED"
+        return f"{self.framework}: {status} ({self.test_count} tests, {self.fail_count} failures)"
+
+
+@dataclass
 class ReviewResult:
     stage: str
     score: float
@@ -163,6 +189,9 @@ class WorkResult:
     tier: str = ""
     workspace_files: list[str] = field(default_factory=list)
     alignment_reports: list[AlignmentReport] = field(default_factory=list)
+    execution_result: ExecutionResult | None = None
+    publish_artifacts: list[str] = field(default_factory=list)
+    cost_tier: str = "full"  # "lightweight" or "full"
 
     @property
     def preview(self) -> str:
@@ -170,7 +199,7 @@ class WorkResult:
 
     def to_dict(self) -> dict:
         """Serialize to dict for JSON storage."""
-        return {
+        d = {
             "job_id": self.job_id,
             "content_hash": self.content_hash,
             "tokens_used": self.tokens_used,
@@ -182,26 +211,58 @@ class WorkResult:
             "revisions": self.revisions,
             "tier": self.tier,
             "workspace_files": self.workspace_files,
+            "cost_tier": self.cost_tier,
+            "publish_artifacts": self.publish_artifacts,
         }
+        if self.execution_result:
+            d["execution"] = {
+                "passed": self.execution_result.passed,
+                "framework": self.execution_result.framework,
+                "test_count": self.execution_result.test_count,
+                "fail_count": self.execution_result.fail_count,
+            }
+        return d
 
 
 class WorkEngine:
-    """Agentic work engine with tiered builders, continuous simplification, and 3-stage review.
+    """Agentic work engine with execution validation, publish step, and cost-aware pipeline.
 
-    Pipeline:
-        Route → Research → Setup workspace → Build → Simplify → Align check
-          → Fix gaps (if any) → Simplify → 3x Review → Submit
+    Pipeline (full):
+        Route → Research → Checkpoint 1 → Setup workspace → Build
+          → Validate (run tests) → Simplify → Checkpoint 2 (grounded)
+          → Fix gaps → Simplify → Checkpoint 3 → 3x Review → Publish → Submit
 
-    Code-simplifier runs after every major code-producing step.
+    Pipeline (lightweight, <3 NEAR):
+        Route → Research → Setup workspace → Build → Validate → Simplify
+          → Checkpoint 2 (grounded) → Checkpoint 3 → 3x Review → Submit
+
+    Code-simplifier runs after every major code-producing step (full pipeline).
+    Execution validation runs tests and feeds real results into alignment.
     """
 
     MAX_REVISIONS_PER_STAGE = 2
+    LIGHTWEIGHT_BUDGET_THRESHOLD = 3.0
+    EXEC_TIMEOUT = 120  # seconds for test execution
+
+    # Publish-related keywords
+    _PUBLISH_TAGS = {"npm", "pypi", "publish", "deploy", "package"}
+    _PUBLISH_KEYWORDS = re.compile(
+        r"publish\s+to\s+npm|upload\s+to\s+pypi|deploy|publish.*package|"
+        r"npm\s+publish|pypi\s+upload|pip\s+install",
+        re.IGNORECASE,
+    )
 
     def __init__(self, config: Config):
         self.config = config
         self.claude = ClaudeCLI(model=config.model, max_tokens=config.max_tokens)
         self.researcher = Researcher(self.claude)
         self.alignment = AlignmentMonitor(self.claude)
+
+    # --- Cost awareness ---
+
+    def _is_lightweight(self, job: Job) -> bool:
+        """Cheap jobs get a leaner pipeline to save on API costs."""
+        return job.budget_near < self.LIGHTWEIGHT_BUDGET_THRESHOLD
 
     # --- Workspace setup ---
 
@@ -417,6 +478,225 @@ class WorkEngine:
         except RuntimeError as e:
             log.warning(f"Code simplification failed (non-fatal): {e}")
 
+    # --- Execution validation ---
+
+    def _validate_execution(self, workspace: str, routing: RoutingResult) -> ExecutionResult:
+        """Actually run tests in the workspace to validate the build.
+
+        Non-blocking: returns a result even on failure, never crashes the pipeline.
+        """
+        if routing.tier == JobTier.TEXT:
+            return ExecutionResult(passed=True, framework="none", output="Text tier — no tests")
+
+        try:
+            return self._run_tests(workspace)
+        except Exception as e:
+            log.warning(f"Execution validation failed (non-fatal): {e}")
+            return ExecutionResult(passed=True, framework="none", output=f"Validation error: {e}")
+
+    def _run_tests(self, workspace: str) -> ExecutionResult:
+        """Detect project type and run appropriate test command."""
+        pkg_json = os.path.join(workspace, "package.json")
+        pyproject = os.path.join(workspace, "pyproject.toml")
+        cargo = os.path.join(workspace, "Cargo.toml")
+
+        if os.path.exists(pkg_json):
+            return self._run_npm_tests(workspace)
+        elif os.path.exists(pyproject):
+            return self._run_python_tests(workspace)
+        elif os.path.exists(cargo):
+            return self._run_cargo_tests(workspace)
+        else:
+            log.info("No test framework detected in workspace")
+            return ExecutionResult(passed=True, framework="none", output="No test framework detected")
+
+    def _exec_cmd(self, cmd: str, cwd: str) -> subprocess.CompletedProcess:
+        """Run a shell command with timeout, capturing output."""
+        return subprocess.run(
+            cmd, shell=True, cwd=cwd, capture_output=True, text=True,
+            timeout=self.EXEC_TIMEOUT,
+        )
+
+    def _run_npm_tests(self, workspace: str) -> ExecutionResult:
+        """Run npm install && npm test."""
+        log.info("Running npm tests...")
+        try:
+            # Install first
+            install = self._exec_cmd("npm install --ignore-scripts 2>&1", workspace)
+            if install.returncode != 0:
+                log.warning(f"npm install failed: {install.stdout[:200]}")
+
+            # Run tests
+            result = self._exec_cmd("npm test 2>&1", workspace)
+            output = result.stdout + result.stderr
+            passed = result.returncode == 0
+
+            # Parse test counts from common frameworks (jest, mocha, vitest)
+            test_count, fail_count = self._parse_test_counts(output)
+
+            return ExecutionResult(
+                passed=passed, framework="npm", output=output[-2000:],
+                test_count=test_count, fail_count=fail_count,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecutionResult(passed=False, framework="npm", output="Test execution timed out")
+
+    def _run_python_tests(self, workspace: str) -> ExecutionResult:
+        """Run pytest."""
+        log.info("Running pytest...")
+        try:
+            result = self._exec_cmd("python -m pytest -v --tb=short 2>&1", workspace)
+            output = result.stdout + result.stderr
+            passed = result.returncode == 0
+
+            test_count, fail_count = self._parse_test_counts(output)
+
+            return ExecutionResult(
+                passed=passed, framework="pytest", output=output[-2000:],
+                test_count=test_count, fail_count=fail_count,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecutionResult(passed=False, framework="pytest", output="Test execution timed out")
+
+    def _run_cargo_tests(self, workspace: str) -> ExecutionResult:
+        """Run cargo test."""
+        log.info("Running cargo tests...")
+        try:
+            result = self._exec_cmd("cargo test 2>&1", workspace)
+            output = result.stdout + result.stderr
+            passed = result.returncode == 0
+
+            test_count, fail_count = self._parse_test_counts(output)
+
+            return ExecutionResult(
+                passed=passed, framework="cargo", output=output[-2000:],
+                test_count=test_count, fail_count=fail_count,
+            )
+        except subprocess.TimeoutExpired:
+            return ExecutionResult(passed=False, framework="cargo", output="Test execution timed out")
+
+    @staticmethod
+    def _parse_test_counts(output: str) -> tuple[int, int]:
+        """Parse test/fail counts from common test framework output."""
+        # pytest: "5 passed, 2 failed"
+        m = re.search(r"(\d+)\s+passed", output)
+        passed = int(m.group(1)) if m else 0
+        m = re.search(r"(\d+)\s+failed", output)
+        failed = int(m.group(1)) if m else 0
+        if passed or failed:
+            return passed + failed, failed
+
+        # jest/vitest: "Tests: 2 failed, 5 passed, 7 total"
+        m = re.search(r"Tests:\s*(?:(\d+)\s+failed,\s*)?(\d+)\s+passed,\s*(\d+)\s+total", output)
+        if m:
+            return int(m.group(3)), int(m.group(1) or 0)
+
+        # cargo: "test result: ok. 5 passed; 0 failed"
+        m = re.search(r"(\d+)\s+passed;\s+(\d+)\s+failed", output)
+        if m:
+            return int(m.group(1)) + int(m.group(2)), int(m.group(2))
+
+        return 0, 0
+
+    def _fix_test_failures(
+        self, job: Job, routing: RoutingResult, workspace: str,
+        exec_result: ExecutionResult,
+    ) -> ExecutionResult:
+        """If tests failed, feed output to builder and re-run tests once."""
+        if exec_result.passed or exec_result.framework == "none":
+            return exec_result
+
+        log.warning(f"Tests failed ({exec_result.summary()}) — sending failures to builder for fix")
+
+        fix_prompt = (
+            f"The tests are FAILING. Fix the code so all tests pass.\n\n"
+            f"Test output:\n```\n{exec_result.output[-3000:]}\n```\n\n"
+            f"Fix the failing tests. Do NOT delete tests — fix the implementation."
+        )
+
+        tier_timeout = self.config.tiers.timeout_for(routing.tier.value)
+        tier_model = self.config.tiers.model_for(routing.tier.value, self.config.model)
+
+        try:
+            self.claude.run_agent(
+                agent=routing.agent,
+                prompt=fix_prompt,
+                workdir=workspace,
+                timeout=tier_timeout,
+                model=tier_model,
+            )
+        except RuntimeError as e:
+            log.warning(f"Test fix attempt failed: {e}")
+            return exec_result
+
+        # Re-run tests
+        retest = self._run_tests(workspace)
+        log.info(f"Retest after fix: {retest.summary()}")
+        return retest
+
+    # --- Publish step ---
+
+    def _needs_publish(self, job: Job, routing: RoutingResult) -> bool:
+        """Check if this job requires publishing a package artifact."""
+        if routing.tier != JobTier.PACKAGE:
+            return False
+
+        tags = set(t.lower() for t in (job.tags or []))
+        if tags & self._PUBLISH_TAGS:
+            return True
+
+        if self._PUBLISH_KEYWORDS.search(job.description or ""):
+            return True
+
+        return False
+
+    def _publish_if_needed(
+        self, job: Job, routing: RoutingResult, workspace: str,
+    ) -> list[str]:
+        """Create publishable artifacts if the job requires it.
+
+        Doesn't actually publish to registries — creates the artifacts
+        (npm tarball or Python sdist/wheel) and returns their paths.
+        """
+        if not self._needs_publish(job, routing):
+            return []
+
+        artifacts: list[str] = []
+
+        try:
+            pkg_json = os.path.join(workspace, "package.json")
+            pyproject = os.path.join(workspace, "pyproject.toml")
+
+            if os.path.exists(pkg_json):
+                log.info("Creating npm tarball...")
+                result = self._exec_cmd("npm pack 2>&1", workspace)
+                if result.returncode == 0:
+                    # npm pack outputs the tarball filename
+                    tarball = result.stdout.strip().split("\n")[-1]
+                    tarball_path = os.path.join(workspace, tarball)
+                    if os.path.exists(tarball_path):
+                        artifacts.append(tarball)
+                        log.info(f"Created npm tarball: {tarball}")
+                else:
+                    log.warning(f"npm pack failed: {result.stdout[:200]}")
+
+            elif os.path.exists(pyproject):
+                log.info("Creating Python sdist/wheel...")
+                result = self._exec_cmd("python -m build 2>&1", workspace)
+                if result.returncode == 0:
+                    dist_dir = os.path.join(workspace, "dist")
+                    if os.path.isdir(dist_dir):
+                        for f in os.listdir(dist_dir):
+                            artifacts.append(f"dist/{f}")
+                        log.info(f"Created Python artifacts: {artifacts}")
+                else:
+                    log.warning(f"python -m build failed: {result.stdout[:200]}")
+
+        except Exception as e:
+            log.warning(f"Publish step failed (non-fatal): {e}")
+
+        return artifacts
+
     # --- Review pipeline ---
 
     def _review_prompt(self, job: Job, deliverable: str) -> str:
@@ -572,10 +852,29 @@ class WorkEngine:
 
     # --- Main pipeline ---
 
+    def _recollect(self, workspace: str, routing: RoutingResult, content: str):
+        """Re-collect deliverable files after workspace changes."""
+        if routing.tier != JobTier.TEXT or not content:
+            return self._collect_deliverable(workspace, routing)
+        deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
+        if os.path.exists(deliverable_path):
+            content = Path(deliverable_path).read_text()
+        return content, []
+
     def complete_job(self, job: Job) -> WorkResult:
-        """Complete a job through the full agentic pipeline."""
-        log.info(f"Starting job: {job.title[:60]} (budget={job.budget_near} NEAR)")
+        """Complete a job through the full agentic pipeline.
+
+        Cost-aware: lightweight jobs (<3 NEAR) skip checkpoint 1 and
+        reduce simplifier passes to save on API calls.
+        """
+        lightweight = self._is_lightweight(job)
+        cost_label = "lightweight" if lightweight else "full"
+        log.info(
+            f"Starting job: {job.title[:60]} "
+            f"(budget={job.budget_near} NEAR, pipeline={cost_label})"
+        )
         alignment_reports: list[AlignmentReport] = []
+        exec_result: ExecutionResult | None = None
 
         # Step 1: Route
         routing = classify(job)
@@ -597,14 +896,19 @@ class WorkEngine:
             f"{len(research.sources)} sources, {len(research.packages_found)} packages"
         )
 
-        # CHECKPOINT 1: Post-research alignment
-        research_report = self.alignment.check_alignment(
-            "post-research",
-            research.content,
-            context=job.description,
-        )
-        alignment_reports.append(research_report)
-        log.info(f"Checkpoint 1: {research_report.summary()}")
+        # CHECKPOINT 1: Post-research alignment (skip for lightweight jobs)
+        if not lightweight:
+            research_report = self.alignment.check_alignment(
+                "post-research",
+                research.content,
+                context=job.description,
+            )
+            alignment_reports.append(research_report)
+            log.info(f"Checkpoint 1: {research_report.summary()}")
+            research_gaps = research_report.critical_gaps
+        else:
+            log.info("Checkpoint 1: skipped (lightweight pipeline)")
+            research_gaps = []
 
         # Step 4: Setup workspace (with research brief + requirements)
         workspace = self._setup_workspace(job, routing, research=research)
@@ -614,9 +918,9 @@ class WorkEngine:
         req_md += "The builder MUST address every requirement below:\n\n"
         for r in requirements:
             req_md += f"- [ ] **[{r.id}]** ({r.priority}) {r.description}\n"
-        if research_report.critical_gaps:
+        if research_gaps:
             req_md += "\n## ⚠️ Research Gaps (need extra attention)\n\n"
-            for gap in research_report.critical_gaps:
+            for gap in research_gaps:
                 req_md += f"- {gap}\n"
         Path(workspace, "REQUIREMENTS.md").write_text(req_md)
 
@@ -624,23 +928,36 @@ class WorkEngine:
             # Step 5: Run builder agent
             content = self._run_builder(job, routing, workspace)
 
-            # Step 5a: Code-simplify (post-build)
-            log.info("Running code-simplifier (post-build)")
-            self._simplify(job, workspace, routing)
+            # Step 5a: Execution validation (run actual tests)
+            exec_result = self._validate_execution(workspace, routing)
+            log.info(f"Execution validation: {exec_result.summary()}")
 
-            # Re-collect after simplification
-            if routing.tier != JobTier.TEXT or not content:
-                content, files = self._collect_deliverable(workspace, routing)
-            else:
-                deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
-                if os.path.exists(deliverable_path):
-                    content = Path(deliverable_path).read_text()
-                files = []
+            # Step 5b: If tests failed, fix and retest
+            if not exec_result.passed:
+                exec_result = self._fix_test_failures(job, routing, workspace, exec_result)
 
-            # CHECKPOINT 2: Post-build alignment
+            # Step 5c: Code-simplify (post-build)
+            if not lightweight:
+                log.info("Running code-simplifier (post-build)")
+                self._simplify(job, workspace, routing)
+
+            # Re-collect after build/simplify
+            content, files = self._recollect(workspace, routing, content)
+
+            # CHECKPOINT 2: Post-build alignment (grounded in execution results)
+            exec_context = ""
+            if exec_result and exec_result.framework != "none":
+                exec_context = (
+                    f"\n\n## Execution Validation\n"
+                    f"Framework: {exec_result.framework}\n"
+                    f"Status: {'PASSED' if exec_result.passed else 'FAILED'}\n"
+                    f"Tests: {exec_result.test_count} total, {exec_result.fail_count} failures\n"
+                    f"Output:\n```\n{exec_result.output[-1500:]}\n```"
+                )
+
             build_report = self.alignment.check_alignment(
                 "post-build",
-                content,
+                content + exec_context,
                 context=job.description,
             )
             alignment_reports.append(build_report)
@@ -656,18 +973,19 @@ class WorkEngine:
                     job, content, build_report, workspace, routing,
                 )
 
-                # Code-simplify again after gap fix
-                log.info("Running code-simplifier (post-fix)")
-                self._simplify(job, workspace, routing)
+                # Code-simplify again after gap fix (full pipeline only)
+                if not lightweight:
+                    log.info("Running code-simplifier (post-fix)")
+                    self._simplify(job, workspace, routing)
 
-                # Re-collect after simplification
-                if routing.tier != JobTier.TEXT or not content:
-                    content, files = self._collect_deliverable(workspace, routing)
-                else:
-                    deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
-                    if os.path.exists(deliverable_path):
-                        content = Path(deliverable_path).read_text()
-                    files = []
+                # Re-collect
+                content, files = self._recollect(workspace, routing, content)
+
+            # Final code-simplify for lightweight (runs once here instead of twice above)
+            if lightweight:
+                log.info("Running code-simplifier (lightweight — single pass)")
+                self._simplify(job, workspace, routing)
+                content, files = self._recollect(workspace, routing, content)
 
             # CHECKPOINT 3: Pre-submit alignment
             submit_report = self.alignment.check_alignment(
@@ -682,12 +1000,21 @@ class WorkEngine:
             final_report = "\n\n---\n\n".join(r.to_markdown() for r in alignment_reports)
             Path(workspace, "ALIGNMENT_REPORT.md").write_text(final_report)
 
-            # Step 7: Review pipeline
+            # Step 6: Review pipeline
             result = self._run_review_pipeline(
                 job, content, routing.tier.value,
                 workspace_files=files if routing.tier != JobTier.TEXT else [],
             )
             result.alignment_reports = alignment_reports
+            result.execution_result = exec_result
+            result.cost_tier = cost_label
+
+            # Step 7: Publish artifacts if needed
+            artifacts = self._publish_if_needed(job, routing, workspace)
+            result.publish_artifacts = artifacts
+            if artifacts:
+                log.info(f"Created {len(artifacts)} publish artifact(s): {artifacts}")
+
             return result
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
