@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 from near_market_agent.config import Config
 from near_market_agent.models import Job
 from near_market_agent.work_engine import WorkEngine, WorkResult
+from near_market_agent.researcher import ResearchBrief
 from near_market_agent.json_utils import extract_json as _extract_json
 
 
@@ -47,6 +48,7 @@ class WorkEngineTests(unittest.TestCase):
             ]
             engine = WorkEngine(cfg)
             # Mock out the agentic parts
+            engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
             engine._run_builder = lambda job, routing, ws: "# Guide\nAsync Python is great."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job())
@@ -73,6 +75,7 @@ class WorkEngineTests(unittest.TestCase):
                 PASSING_REVIEW,                     # review 3 passes
             ]
             engine = WorkEngine(cfg)
+            engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
             engine._run_builder = lambda job, routing, ws: "# Draft\nWeak content."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job())
@@ -93,6 +96,7 @@ class WorkEngineTests(unittest.TestCase):
                 PASSING_REVIEW,
             ]
             engine = WorkEngine(cfg)
+            engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
             engine._run_builder = lambda job, routing, ws: "# Package\nBuilt."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job(
@@ -108,6 +112,7 @@ class WorkEngineTests(unittest.TestCase):
 
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             engine = WorkEngine(cfg)
+            engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
             engine._run_builder = lambda job, routing, ws: ""
             engine._simplify = lambda job, ws, routing: None
             mock_claude = MockCLI.return_value

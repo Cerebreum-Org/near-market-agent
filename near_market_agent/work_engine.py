@@ -1,7 +1,8 @@
-"""Agentic work completion engine with tiered builders and 3-stage review.
+"""Agentic work completion engine with deep research, tiered builders, and 3-stage review.
 
 Pipeline:
-    Job → Route (classify tier) → Setup workspace → Run agent → Code-simplify
+    Job → Route (classify tier) → Deep Research (web search, package lookup, docs)
+      → Setup workspace (with RESEARCH.md) → Run builder agent → Code-simplify
       → Review 1 (Requirements) → Review 2 (Quality) → Review 3 (Final Gate)
       → Package deliverable → Submit
 """
@@ -23,6 +24,7 @@ from .models import Job
 from .claude_cli import ClaudeCLI
 from .job_router import classify, JobTier, RoutingResult
 from .json_utils import extract_json
+from .researcher import Researcher, ResearchBrief
 from .sanitize import sanitize_text
 
 log = logging.getLogger(__name__)
@@ -192,11 +194,15 @@ class WorkEngine:
     def __init__(self, config: Config):
         self.config = config
         self.claude = ClaudeCLI(model=config.model, max_tokens=config.max_tokens)
+        self.researcher = Researcher(self.claude)
 
     # --- Workspace setup ---
 
-    def _setup_workspace(self, job: Job, routing: RoutingResult) -> str:
-        """Create a temp workspace with job description, template, and knowledge."""
+    def _setup_workspace(
+        self, job: Job, routing: RoutingResult,
+        research: ResearchBrief | None = None,
+    ) -> str:
+        """Create a temp workspace with job description, template, knowledge, and research."""
         workspace = tempfile.mkdtemp(prefix=f"near_work_{routing.tier.value}_")
         log.info(f"Created workspace: {workspace} (tier={routing.tier.value})")
 
@@ -210,6 +216,16 @@ class WorkEngine:
             f"## Description\n\n{safe_desc}\n"
         )
         Path(workspace, "JOB.md").write_text(job_md)
+
+        # Write research brief if available
+        if research and research.content:
+            research_md = research.content
+            if research.sources:
+                research_md += "\n\n## Sources\n\n"
+                for src in research.sources[:20]:
+                    research_md += f"- {src}\n"
+            Path(workspace, "RESEARCH.md").write_text(research_md)
+            log.info(f"Research brief written: {len(research.content)} chars, {len(research.sources)} sources")
 
         # Copy template if applicable
         if routing.template:
@@ -312,6 +328,14 @@ class WorkEngine:
             f"Read JOB.md for requirements. "
             f"You have NEAR-REFERENCE.md for protocol knowledge. "
         )
+        # Reference research brief if it exists
+        research_path = os.path.join(workspace, "RESEARCH.md")
+        if os.path.exists(research_path):
+            prompt += (
+                "IMPORTANT: Read RESEARCH.md first — it contains deep research on the "
+                "technologies, APIs, packages, and documentation needed for this job. "
+                "Use the specific APIs, code patterns, and package versions documented there. "
+            )
         if routing.template:
             prompt += f"A '{routing.template}' template is pre-loaded — build on top of it. "
         prompt += "Build the complete deliverable. Run tests if applicable."
@@ -517,14 +541,22 @@ class WorkEngine:
         if self.config.tiers.is_disabled(routing.tier.value):
             raise RuntimeError(f"Tier {routing.tier.value} is disabled via config")
 
-        # Step 2: Setup workspace
-        workspace = self._setup_workspace(job, routing)
+        # Step 2: Deep research
+        log.info("Starting deep research phase...")
+        research = self.researcher.research_job(job.title, job.description)
+        log.info(
+            f"Research complete: {len(research.content)} chars, "
+            f"{len(research.sources)} sources, {len(research.packages_found)} packages"
+        )
+
+        # Step 3: Setup workspace (with research brief)
+        workspace = self._setup_workspace(job, routing, research=research)
 
         try:
-            # Step 3: Run builder agent
+            # Step 4: Run builder agent
             content = self._run_builder(job, routing, workspace)
 
-            # Step 4: Code-simplify
+            # Step 5: Code-simplify
             self._simplify(job, workspace, routing)
 
             # Re-collect after simplification (files may have changed)
@@ -536,7 +568,7 @@ class WorkEngine:
                     content = Path(deliverable_path).read_text()
                 files = []
 
-            # Step 5: Review pipeline
+            # Step 6: Review pipeline
             return self._run_review_pipeline(
                 job, content, routing.tier.value,
                 workspace_files=files if routing.tier != JobTier.TEXT else [],
@@ -552,7 +584,9 @@ class WorkEngine:
         routing = classify(job)
 
         if routing.tier != JobTier.TEXT:
-            workspace = self._setup_workspace(job, routing)
+            # Research again for revisions — feedback may reference new requirements
+            research = self.researcher.research_job(job.title, f"{job.description}\n\nRevision feedback: {feedback}")
+            workspace = self._setup_workspace(job, routing, research=research)
             try:
                 Path(workspace, "PREVIOUS_DELIVERABLE.md").write_text(original)
                 revised = self._revise_agentic(job, routing, workspace, feedback)
