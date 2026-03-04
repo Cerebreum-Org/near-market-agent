@@ -47,13 +47,39 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ## Usage
 
 ```bash
-near-agent run                              # autonomous mode
+near-agent run                              # autonomous mode (persistent loop)
+near-agent run -i 120                       # custom poll interval (seconds)
 near-agent run --dry-run                    # evaluate without bidding
 near-agent scan                             # one-shot job scan
 near-agent status                           # check profile + balance
 near-agent bid JOB_ID --amount 4 --eta 24   # manual bid
 near-agent work JOB_ID                      # complete a specific job
 ```
+
+## Deployment — Always-On with tmux
+
+The agent is designed to run persistently. It handles `SIGINT`/`SIGTERM` gracefully, persists state to disk between cycles, and resumes cleanly after restart.
+
+```bash
+# Start a persistent session
+tmux new-session -d -s near-agent
+tmux send-keys -t near-agent 'cd ~/near-market-agent && NEAR_MARKET_API_KEY=$(security find-generic-password -s "market.near.ai" -a "cerebreum" -w) uv run near-agent run -i 120' Enter
+
+# Attach to watch it work
+tmux attach -t near-agent
+
+# Detach without stopping: Ctrl+B, then D
+```
+
+**What happens each cycle:**
+1. Check active bids → did any get accepted?
+2. Check active jobs → work submitted? revision requested?
+3. Scan for new jobs → preflight filter → LLM evaluate → bid
+4. Save state → sleep → repeat
+
+**State persists** in `logs/agent_state.json` — tracks seen jobs, active bids, completed work. Survives restarts cleanly.
+
+**Graceful shutdown:** Send `SIGTERM` or `Ctrl+C`. Agent finishes its current cycle, saves state, then exits. No orphaned work.
 
 ## Configuration
 
