@@ -8,6 +8,7 @@ import json
 from .config import Config
 from .models import Job, JobEvaluation
 from .claude_cli import ClaudeCLI
+from .sanitize import sanitize_job
 
 
 EVAL_SYSTEM = """You are an autonomous agent evaluating freelance jobs on market.near.ai.
@@ -123,15 +124,17 @@ class JobEvaluator:
         if preflight:
             return _skip_result(job.job_id, preflight)
 
+        safe_title, safe_desc = sanitize_job(job.title, job.description)
+
         system = EVAL_SYSTEM.format(capabilities=self.config.capabilities.description)
         user = EVAL_USER.format(
-            title=job.title,
+            title=safe_title,
             budget=job.budget_near,
             bid_count=job.bid_count or 0,
             tags=", ".join(job.tags) if job.tags else "none",
             expires=str(job.expires_at) if job.expires_at else "none",
             job_type=job.job_type.value,
-            description=job.description[:3000],
+            description=safe_desc[:3000],
         )
 
         try:

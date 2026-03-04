@@ -22,6 +22,7 @@ from .config import Config
 from .models import Job
 from .claude_cli import ClaudeCLI
 from .job_router import classify, JobTier, RoutingResult
+from .sanitize import sanitize_text
 
 
 # --- Directory where templates and knowledge live ---
@@ -170,13 +171,14 @@ class WorkEngine:
         """Create a temp workspace with job description, template, and knowledge."""
         workspace = tempfile.mkdtemp(prefix=f"near_work_{routing.tier.value}_")
 
-        # Write job description
+        # Write job description (sanitized to prevent prompt injection)
+        safe_desc = sanitize_text(job.description, max_length=10000)
         job_md = (
             f"# Job Requirements\n\n"
-            f"**Title:** {job.title}\n"
+            f"**Title:** {sanitize_text(job.title, max_length=500)}\n"
             f"**Budget:** {job.budget_near} NEAR\n"
             f"**Tags:** {', '.join(job.tags) if job.tags else 'none'}\n\n"
-            f"## Description\n\n{job.description}\n"
+            f"## Description\n\n{safe_desc}\n"
         )
         Path(workspace, "JOB.md").write_text(job_md)
 

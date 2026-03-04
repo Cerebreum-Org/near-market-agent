@@ -104,10 +104,10 @@ def classify(job: Job) -> RoutingResult:
     template = None
     if is_mcp:
         template = "mcp-server"
-    elif is_npm or (is_code_build and language == "typescript"):
-        template = "npm-package"
     elif is_pypi or (is_code_build and language == "python"):
         template = "pypi-package"
+    elif is_npm or (is_code_build and language == "typescript"):
+        template = "npm-package"
 
     if is_npm or is_pypi or is_mcp or is_lib or is_github_action or is_code_build:
         return RoutingResult(

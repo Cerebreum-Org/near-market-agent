@@ -15,6 +15,9 @@ dependencies = [
 [project.scripts]
 near-agent = "near_market_agent.cli:cli"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

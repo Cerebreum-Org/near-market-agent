@@ -1,10 +1,20 @@
-"""HTTP client for market.near.ai API."""
+"""HTTP client for market.near.ai API.
+
+Features:
+- Connection pooling (configurable max connections)
+- Rate limit tracking (respects 429 + Retry-After headers)
+- Exponential backoff with jitter
+- Request metrics
+"""
 
 from __future__ import annotations
 
 import asyncio
 import httpx
 import json
+import random
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config
@@ -17,6 +27,36 @@ MAX_RETRIES = 3
 RETRY_BACKOFF = [1, 3, 10]  # seconds
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+# Connection pool config
+MAX_CONNECTIONS = 20
+MAX_KEEPALIVE_CONNECTIONS = 10
+
+
+@dataclass
+class RateLimitState:
+    """Tracks rate limit state from API responses."""
+    remaining: int | None = None
+    limit: int | None = None
+    reset_at: float | None = None  # unix timestamp
+    retry_after: float | None = None
+    last_429_at: float | None = None
+    consecutive_429s: int = 0
+
+
+@dataclass
+class RequestMetrics:
+    """Tracks API request metrics."""
+    total_requests: int = 0
+    successful: int = 0
+    retried: int = 0
+    rate_limited: int = 0
+    errors: int = 0
+    total_latency_ms: float = 0.0
+
+    @property
+    def avg_latency_ms(self) -> float:
+        return self.total_latency_ms / self.total_requests if self.total_requests else 0.0
+
 
 class MarketAPIError(Exception):
     """API error with status code and detail."""
@@ -28,15 +68,25 @@ class MarketAPIError(Exception):
 
 
 class MarketClient:
-    """Async client for the NEAR Agent Market API."""
+    """Async client for the NEAR Agent Market API.
+
+    Features connection pooling, rate limit tracking, and request metrics.
+    """
 
     def __init__(self, config: Config):
         self.config = config
         self._client: httpx.AsyncClient | None = None
+        self.rate_limit = RateLimitState()
+        self.metrics = RequestMetrics()
 
     def _ensure_client(self) -> httpx.AsyncClient:
-        """Lazily create (or recreate) the httpx client."""
+        """Lazily create (or recreate) the httpx client with connection pooling."""
         if self._client is None or self._client.is_closed:
+            pool_limits = httpx.Limits(
+                max_connections=MAX_CONNECTIONS,
+                max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
+                keepalive_expiry=30.0,
+            )
             self._client = httpx.AsyncClient(
                 base_url=self.config.api_url,
                 headers={
@@ -45,6 +95,7 @@ class MarketClient:
                     "User-Agent": "near-market-agent/0.1.0",
                 },
                 timeout=httpx.Timeout(30.0, connect=10.0),
+                limits=pool_limits,
             )
         return self._client
 
@@ -61,18 +112,83 @@ class MarketClient:
 
     # --- Internal ---
 
+    def _update_rate_limit(self, resp: httpx.Response) -> None:
+        """Extract rate limit info from response headers."""
+        rl = self.rate_limit
+        if "x-ratelimit-remaining" in resp.headers:
+            try:
+                rl.remaining = int(resp.headers["x-ratelimit-remaining"])
+            except ValueError:
+                pass
+        if "x-ratelimit-limit" in resp.headers:
+            try:
+                rl.limit = int(resp.headers["x-ratelimit-limit"])
+            except ValueError:
+                pass
+        if "x-ratelimit-reset" in resp.headers:
+            try:
+                rl.reset_at = float(resp.headers["x-ratelimit-reset"])
+            except ValueError:
+                pass
+        if resp.status_code == 429:
+            rl.last_429_at = time.monotonic()
+            rl.consecutive_429s += 1
+            self.metrics.rate_limited += 1
+            # Parse Retry-After header
+            retry_after = resp.headers.get("retry-after")
+            if retry_after:
+                try:
+                    rl.retry_after = float(retry_after)
+                except ValueError:
+                    rl.retry_after = None
+        else:
+            rl.consecutive_429s = 0
+            rl.retry_after = None
+
+    async def _wait_for_rate_limit(self) -> None:
+        """Wait if we're rate-limited before making a request."""
+        rl = self.rate_limit
+        if rl.retry_after and rl.last_429_at:
+            elapsed = time.monotonic() - rl.last_429_at
+            remaining = rl.retry_after - elapsed
+            if remaining > 0:
+                await asyncio.sleep(min(remaining, 60))  # cap at 60s
+        elif rl.remaining is not None and rl.remaining <= 1:
+            # Preemptive slow-down when nearly exhausted
+            await asyncio.sleep(1.0)
+
     async def _request(self, method: str, path: str, **kwargs) -> Any:
+        await self._wait_for_rate_limit()
+
         last_error: Exception | None = None
         for attempt in range(MAX_RETRIES):
+            start = time.monotonic()
+            self.metrics.total_requests += 1
             try:
                 resp = await self._ensure_client().request(method, path, **kwargs)
-                if resp.status_code in RETRYABLE_STATUS and attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_BACKOFF[attempt])
+                elapsed_ms = (time.monotonic() - start) * 1000
+                self.metrics.total_latency_ms += elapsed_ms
+                self._update_rate_limit(resp)
+
+                if resp.status_code == 429 and attempt < MAX_RETRIES - 1:
+                    # Use Retry-After if available, otherwise exponential backoff with jitter
+                    wait = self.rate_limit.retry_after or RETRY_BACKOFF[attempt]
+                    jitter = random.uniform(0, wait * 0.2)
+                    self.metrics.retried += 1
+                    await asyncio.sleep(wait + jitter)
+                    continue
+                if resp.status_code in RETRYABLE_STATUS and resp.status_code != 429 and attempt < MAX_RETRIES - 1:
+                    jitter = random.uniform(0, RETRY_BACKOFF[attempt] * 0.3)
+                    self.metrics.retried += 1
+                    await asyncio.sleep(RETRY_BACKOFF[attempt] + jitter)
                     continue
                 if resp.status_code >= 400:
+                    self.metrics.errors += 1
                     raise MarketAPIError(resp.status_code, resp.text[:500], str(resp.url))
                 if resp.status_code == 204:
+                    self.metrics.successful += 1
                     return None
+                self.metrics.successful += 1
                 try:
                     return resp.json()
                 except json.JSONDecodeError:
@@ -86,9 +202,14 @@ class MarketClient:
                 httpx.RemoteProtocolError,
                 httpx.PoolTimeout,
             ) as e:
+                elapsed_ms = (time.monotonic() - start) * 1000
+                self.metrics.total_latency_ms += elapsed_ms
+                self.metrics.errors += 1
                 last_error = e
                 if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(RETRY_BACKOFF[attempt])
+                    jitter = random.uniform(0, RETRY_BACKOFF[attempt] * 0.3)
+                    self.metrics.retried += 1
+                    await asyncio.sleep(RETRY_BACKOFF[attempt] + jitter)
                     continue
                 raise MarketAPIError(0, f"Connection failed after {MAX_RETRIES} retries: {e}", path)
         raise last_error or MarketAPIError(0, "Unknown retry failure", path)

@@ -25,10 +25,12 @@ class MarketClientTests(unittest.IsolatedAsyncioTestCase):
         first.status_code = 503
         first.url = "https://market.near.ai/v1/jobs"
         first.text = "unavailable"
+        first.headers = {}
 
         second = Mock()
         second.status_code = 200
         second.json.return_value = {"ok": True}
+        second.headers = {}
 
         self.client._client.request = AsyncMock(side_effect=[first, second])
 
@@ -37,13 +39,15 @@ class MarketClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertEqual(self.client._client.request.await_count, 2)
-        sleep_mock.assert_awaited_once_with(1)
+        # sleep now includes jitter, so just check it was called once
+        self.assertEqual(sleep_mock.await_count, 1)
 
     async def test_request_raises_market_error_for_http_failure(self) -> None:
         resp = Mock()
         resp.status_code = 400
         resp.url = "https://market.near.ai/v1/jobs"
         resp.text = "bad request payload"
+        resp.headers = {}
         self.client._client.request = AsyncMock(return_value=resp)
 
         with self.assertRaises(MarketAPIError) as ctx:
