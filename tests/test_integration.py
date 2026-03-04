@@ -127,20 +127,36 @@ class TestEvaluatorIntegration:
         result = evaluator.evaluate_job(job)
         assert not result.should_bid
 
-    def test_preflight_skips_multimedia(self):
+    def test_preflight_passes_multimedia_to_llm(self):
+        """Multimedia jobs are no longer preflight-filtered — LLM decides."""
         job = _make_job(
             title="Create a video tutorial about NEAR",
             description="Record a video demonstrating how to deploy...",
         )
         evaluator = JobEvaluator(Config(market_api_key="test"))
-        result = evaluator.evaluate_job(job)
-        assert not result.should_bid
+        result = evaluator._preflight_filter(job)
+        assert result is None  # Not filtered — goes to LLM
 
-    def test_preflight_skips_saturated_jobs(self):
+    def test_preflight_passes_saturated_to_llm(self):
+        """High bid count jobs are no longer preflight-filtered — LLM decides."""
         job = _make_job(bid_count=15)
         evaluator = JobEvaluator(Config(market_api_key="test"))
+        result = evaluator._preflight_filter(job)
+        assert result is None  # Not filtered — goes to LLM
+
+    def test_preflight_skips_disabled_tier(self):
+        from near_market_agent.config import TierConfig
+        job = _make_job(
+            title="Multi-agent orchestration system",
+            description="Build a multi-agent system...",
+        )
+        evaluator = JobEvaluator(Config(
+            market_api_key="test",
+            tiers=TierConfig(disabled_tiers=["system"]),
+        ))
         result = evaluator.evaluate_job(job)
         assert not result.should_bid
+        assert "disabled" in result.reasoning.lower()
 
     def test_preflight_passes_good_job(self):
         job = _make_job(

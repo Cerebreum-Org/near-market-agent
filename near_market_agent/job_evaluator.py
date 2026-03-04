@@ -13,24 +13,34 @@ from .sanitize import sanitize_job
 
 
 EVAL_SYSTEM = """You are an autonomous agent evaluating freelance jobs on market.near.ai.
-You must decide which jobs to bid on based on your capabilities and the job requirements.
+You are a versatile AI agent that can handle virtually ANY job. You should bid aggressively.
 
 Your capabilities:
 {capabilities}
 
-Jobs you should SKIP (score 0):
-- Physical tasks (delivery, photography, in-person anything)
-- Video/image/audio creation (you can't generate multimedia)
-- Jobs requiring real social media accounts you don't have
-- Scam-looking or nonsensical jobs
-- Jobs that require specific credentials or licenses you don't have
+You can handle:
+- Code: Python, TypeScript, Rust, Solidity, any language
+- Packages: npm, pypi, MCP servers, Chrome extensions, VS Code extensions
+- Writing: technical docs, guides, blog posts, research, analysis
+- Bots: Discord, Telegram, Slack, any platform
+- AI/ML: LangChain, agents, embeddings, fine-tuning pipelines
+- NEAR protocol: smart contracts, SDKs, integrations, DeFi
+- DevOps: Docker, CI/CD, deployment configs, GitHub Actions
+- Data: scraping, processing, APIs, databases
+- Creative: content strategy, marketing copy, newsletters
+
+Only skip jobs that are TRULY impossible for an AI:
+- Physical tasks requiring a human body (delivery, photography in-person)
+- Jobs requiring specific credentials/licenses you cannot obtain
+- Obviously harmful or illegal requests
+
+For everything else, bid. Be creative about how you'd approach it.
 
 Evaluation criteria:
-- Can you actually complete this? (capability match)
+- Can you produce a useful deliverable? (even partial value counts)
 - Is the budget reasonable for the effort? (value)
-- How many bids already? (competition — fewer is better)
+- How many bids already? (competition — fewer is better, but don't skip just because of competition)
 - Is the deadline achievable? (time)
-- Is the requester reputable? (trust)
 
 Respond with ONLY valid JSON (no markdown):
 {{
@@ -133,17 +143,13 @@ class JobEvaluator:
         )
 
     def _preflight_filter(self, job: Job) -> str | None:
-        """Fast rule-based filter before LLM assessment. Returns skip reason or None.
+        """Minimal filter — only skip jobs that are truly impossible.
 
-        Aggressively filters to minimize expensive Claude CLI calls.
-        Only jobs that genuinely need LLM evaluation should pass.
+        We want to bid on everything we can attempt. Let the LLM decide
+        if we can handle it; don't gatekeep with keyword matching.
         """
         if not job.title or not job.description:
             return "Missing title or description"
-
-        title_lower = job.title.lower()
-        desc_lower = job.description.lower()
-        combined = f"{title_lower} {desc_lower}"
 
         if job.is_expired:
             return "Job is expired"
@@ -154,100 +160,6 @@ class JobEvaluator:
         routing = classify(job)
         if self.config.tiers.is_disabled(routing.tier.value):
             return f"Tier {routing.tier.value} is disabled"
-
-        # --- Platform-specific jobs we can't do ---
-        gpt_signals = ["custom gpt", "gpt store", "gpt -", "chatgpt plugin",
-                        "openai plugin", "gpts"]
-        for sig in gpt_signals:
-            if sig in title_lower:
-                return f"GPT Store/plugin job (matched: {sig})"
-
-        if "autogpt" in title_lower:
-            return "AutoGPT plugin job"
-
-        if "poe -" in title_lower or "poe bot" in title_lower:
-            return "Poe platform job"
-
-        if "huggingface" in title_lower or "hugging face" in title_lower:
-            return "HuggingFace platform job"
-
-        if "perplexity" in title_lower:
-            return "Perplexity platform job"
-
-        # --- Multimedia / creative jobs ---
-        multimedia_signals = [
-            "create a video", "record a video", "make a video",
-            "tiktok video", "youtube video", "record audio",
-            "voice recording", "short video", "video demo", "video script",
-            "infographic", "graphic generator", "graphics generator",
-            "image generat", "logo design",
-        ]
-        for signal in multimedia_signals:
-            if signal in combined:
-                return f"Multimedia/creative job (matched: {signal})"
-
-        # --- Physical / real-world tasks ---
-        physical_signals = [
-            "pick up", "deliver to", "in-person", "photograph",
-            "plant a tree", "clean a car", "physical",
-        ]
-        for signal in physical_signals:
-            if signal in combined:
-                return f"Physical task (matched: {signal})"
-
-        # --- Social media account jobs ---
-        social_signals = [
-            "account growth", "manage account", "post on twitter",
-            "post on reddit", "reddit account", "twitter account",
-            "social media manager", "community engagement",
-            "developer community engagement",
-            "wikipedia presence", "wikipedia edit",
-            "answer bot - reddit", "answer bot - stack overflow",
-            "twitter mention monitor", "mention monitor",
-        ]
-        for signal in social_signals:
-            if signal in combined:
-                return f"Social media/account job (matched: {signal})"
-
-        # --- Low-value spam patterns ---
-        if " v2" in job.title or " v3" in job.title or " v4" in job.title:
-            if job.budget_near < 15:
-                return f"Low-budget template job ({job.budget_near} NEAR, versioned)"
-
-        if ("npm package" in title_lower or "pypi package" in title_lower
-                or "npm package" in desc_lower):
-            if job.budget_near < 10:
-                return f"Low-budget package job ({job.budget_near} NEAR)"
-
-        if "mcp server" in title_lower:
-            if job.budget_near < 10:
-                return f"Low-budget MCP server job ({job.budget_near} NEAR)"
-
-        if "langchain" in title_lower:
-            if job.budget_near < 10:
-                return f"Low-budget LangChain job ({job.budget_near} NEAR)"
-
-        bot_patterns = ["discord bot", "telegram bot", "slack bot",
-                        "chrome extension", "vs code extension",
-                        "github action", "openclaw skill"]
-        for pat in bot_patterns:
-            if pat in title_lower and job.budget_near < 10:
-                return f"Low-budget {pat} job ({job.budget_near} NEAR)"
-
-        if "create gpt" in title_lower or "gpt:" in title_lower:
-            return "GPT creation job"
-
-        if (job.bid_count or 0) > 10:
-            return f"Too many existing bids ({job.bid_count})"
-
-        if job.budget_near < 5:
-            return f"Budget below effective minimum ({job.budget_near} NEAR)"
-
-        if "youtube" in combined or "free course" in combined or "online course" in combined:
-            return "Course/YouTube creation job"
-
-        if "warhead" in title_lower or "nuclear warhead" in desc_lower:
-            return "Obviously harmful/troll job"
 
         return None
 
