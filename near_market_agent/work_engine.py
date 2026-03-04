@@ -19,6 +19,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .alignment import AlignmentMonitor, AlignmentReport
 from .config import Config
 from .models import Job
 from .claude_cli import ClaudeCLI
@@ -159,6 +160,7 @@ class WorkResult:
     revisions: int = 0
     tier: str = ""
     workspace_files: list[str] = field(default_factory=list)
+    alignment_reports: list[AlignmentReport] = field(default_factory=list)
 
     @property
     def preview(self) -> str:
@@ -195,6 +197,7 @@ class WorkEngine:
         self.config = config
         self.claude = ClaudeCLI(model=config.model, max_tokens=config.max_tokens)
         self.researcher = Researcher(self.claude)
+        self.alignment = AlignmentMonitor(self.claude)
 
     # --- Workspace setup ---
 
@@ -325,14 +328,16 @@ class WorkEngine:
     def _run_builder(self, job: Job, routing: RoutingResult, workspace: str) -> str:
         """Run the appropriate builder agent in the workspace."""
         prompt = (
-            f"Read JOB.md for requirements. "
+            f"Read JOB.md for the job description. "
+            f"Read REQUIREMENTS.md for the specific requirements checklist — "
+            f"you MUST address every item marked as 'must'. "
             f"You have NEAR-REFERENCE.md for protocol knowledge. "
         )
         # Reference research brief if it exists
         research_path = os.path.join(workspace, "RESEARCH.md")
         if os.path.exists(research_path):
             prompt += (
-                "IMPORTANT: Read RESEARCH.md first — it contains deep research on the "
+                "IMPORTANT: Read RESEARCH.md — it contains deep research on the "
                 "technologies, APIs, packages, and documentation needed for this job. "
                 "Use the specific APIs, code patterns, and package versions documented there. "
             )
@@ -528,11 +533,45 @@ class WorkEngine:
             workspace_files=workspace_files or [],
         )
 
+    # --- Alignment gap fix ---
+
+    def _fix_alignment_gaps(
+        self, job: Job, content: str, report: AlignmentReport,
+        workspace: str, routing: RoutingResult,
+    ) -> str:
+        """Targeted fix for critical alignment gaps found at a checkpoint."""
+        gaps_text = "\n".join(f"- {gap}" for gap in report.critical_gaps)
+        suggestions_text = "\n".join(f"- {s}" for s in report.suggestions) if report.suggestions else ""
+
+        failed_reqs = []
+        for check in report.checks:
+            if check.status == "fail":
+                req = next((r for r in report.requirements if r.id == check.id), None)
+                if req:
+                    failed_reqs.append(f"- [{req.id}] {req.description}: {check.evidence}")
+
+        feedback = (
+            f"The deliverable has critical gaps that must be fixed:\n\n"
+            f"## Failed Requirements\n{chr(10).join(failed_reqs)}\n\n"
+            f"## Critical Gaps\n{gaps_text}\n"
+        )
+        if suggestions_text:
+            feedback += f"\n## Suggested Fixes\n{suggestions_text}\n"
+
+        log.info(f"Fixing {len(report.critical_gaps)} alignment gaps")
+
+        # Use agentic revision for code tiers, prompt revision for text
+        if routing.tier != JobTier.TEXT:
+            return self._revise_agentic(job, routing, workspace, feedback)
+        else:
+            return self._revise(job, content, feedback)
+
     # --- Main pipeline ---
 
     def complete_job(self, job: Job) -> WorkResult:
         """Complete a job through the full agentic pipeline."""
         log.info(f"Starting job: {job.title[:60]} (budget={job.budget_near} NEAR)")
+        alignment_reports: list[AlignmentReport] = []
 
         # Step 1: Route
         routing = classify(job)
@@ -541,7 +580,12 @@ class WorkEngine:
         if self.config.tiers.is_disabled(routing.tier.value):
             raise RuntimeError(f"Tier {routing.tier.value} is disabled via config")
 
-        # Step 2: Deep research
+        # Step 2: Extract requirements checklist
+        log.info("Extracting requirements checklist...")
+        requirements = self.alignment.extract_requirements(job.title, job.description)
+        log.info(f"Extracted {len(requirements)} requirements")
+
+        # Step 3: Deep research
         log.info("Starting deep research phase...")
         research = self.researcher.research_job(job.title, job.description)
         log.info(
@@ -549,14 +593,53 @@ class WorkEngine:
             f"{len(research.sources)} sources, {len(research.packages_found)} packages"
         )
 
-        # Step 3: Setup workspace (with research brief)
+        # CHECKPOINT 1: Post-research alignment
+        research_report = self.alignment.check_alignment(
+            "post-research",
+            research.content,
+            context=job.description,
+        )
+        alignment_reports.append(research_report)
+        log.info(f"Checkpoint 1: {research_report.summary()}")
+
+        # Step 4: Setup workspace (with research brief + requirements)
         workspace = self._setup_workspace(job, routing, research=research)
 
+        # Write requirements checklist to workspace for the builder
+        req_md = "# Requirements Checklist\n\n"
+        req_md += "The builder MUST address every requirement below:\n\n"
+        for r in requirements:
+            req_md += f"- [ ] **[{r.id}]** ({r.priority}) {r.description}\n"
+        if research_report.critical_gaps:
+            req_md += "\n## ⚠️ Research Gaps (need extra attention)\n\n"
+            for gap in research_report.critical_gaps:
+                req_md += f"- {gap}\n"
+        Path(workspace, "REQUIREMENTS.md").write_text(req_md)
+
         try:
-            # Step 4: Run builder agent
+            # Step 5: Run builder agent
             content = self._run_builder(job, routing, workspace)
 
-            # Step 5: Code-simplify
+            # CHECKPOINT 2: Post-build alignment
+            build_report = self.alignment.check_alignment(
+                "post-build",
+                content,
+                context=job.description,
+            )
+            alignment_reports.append(build_report)
+            log.info(f"Checkpoint 2: {build_report.summary()}")
+
+            # If critical gaps found, run a targeted fix before simplification
+            if build_report.critical_gaps:
+                log.warning(
+                    f"Post-build alignment found {len(build_report.critical_gaps)} critical gaps — "
+                    f"running targeted fix"
+                )
+                content = self._fix_alignment_gaps(
+                    job, content, build_report, workspace, routing,
+                )
+
+            # Step 6: Code-simplify
             self._simplify(job, workspace, routing)
 
             # Re-collect after simplification (files may have changed)
@@ -568,11 +651,26 @@ class WorkEngine:
                     content = Path(deliverable_path).read_text()
                 files = []
 
-            # Step 6: Review pipeline
-            return self._run_review_pipeline(
+            # CHECKPOINT 3: Pre-submit alignment
+            submit_report = self.alignment.check_alignment(
+                "pre-submit",
+                content,
+                context=job.description,
+            )
+            alignment_reports.append(submit_report)
+            log.info(f"Checkpoint 3: {submit_report.summary()}")
+
+            # Write final alignment report to workspace
+            final_report = "\n\n---\n\n".join(r.to_markdown() for r in alignment_reports)
+            Path(workspace, "ALIGNMENT_REPORT.md").write_text(final_report)
+
+            # Step 7: Review pipeline
+            result = self._run_review_pipeline(
                 job, content, routing.tier.value,
                 workspace_files=files if routing.tier != JobTier.TEXT else [],
             )
+            result.alignment_reports = alignment_reports
+            return result
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
             log.info(f"Cleaned workspace: {workspace}")

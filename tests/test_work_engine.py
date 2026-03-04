@@ -9,9 +9,23 @@ from unittest.mock import patch, MagicMock
 
 from near_market_agent.config import Config
 from near_market_agent.models import Job
+from near_market_agent.alignment import AlignmentReport, Requirement, RequirementCheck
 from near_market_agent.work_engine import WorkEngine, WorkResult
 from near_market_agent.researcher import ResearchBrief
 from near_market_agent.json_utils import extract_json as _extract_json
+
+
+def _mock_alignment(engine):
+    """Mock out alignment monitor for unit tests."""
+    engine.alignment.extract_requirements = lambda t, d: [
+        Requirement(id="R1", description="test", priority="must")
+    ]
+    engine.alignment._requirements = [Requirement(id="R1", description="test", priority="must")]
+    engine.alignment.check_alignment = lambda cp, content, context="": AlignmentReport(
+        checkpoint=cp, requirements=[], checks=[
+            RequirementCheck(id="R1", status="pass", evidence="ok")
+        ], overall_score=0.9,
+    )
 
 
 def _job(**overrides):
@@ -49,6 +63,7 @@ class WorkEngineTests(unittest.TestCase):
             engine = WorkEngine(cfg)
             # Mock out the agentic parts
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
+            _mock_alignment(engine)
             engine._run_builder = lambda job, routing, ws: "# Guide\nAsync Python is great."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job())
@@ -76,6 +91,7 @@ class WorkEngineTests(unittest.TestCase):
             ]
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
+            _mock_alignment(engine)
             engine._run_builder = lambda job, routing, ws: "# Draft\nWeak content."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job())
@@ -97,6 +113,7 @@ class WorkEngineTests(unittest.TestCase):
             ]
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
+            _mock_alignment(engine)
             engine._run_builder = lambda job, routing, ws: "# Package\nBuilt."
             engine._simplify = lambda job, ws, routing: None
             result = engine.complete_job(_job(
@@ -113,6 +130,7 @@ class WorkEngineTests(unittest.TestCase):
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
+            _mock_alignment(engine)
             engine._run_builder = lambda job, routing, ws: ""
             engine._simplify = lambda job, ws, routing: None
             mock_claude = MockCLI.return_value
