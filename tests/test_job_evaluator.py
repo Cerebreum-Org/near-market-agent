@@ -18,7 +18,7 @@ def _job(**overrides):
         "creator_agent_id": "creator-1",
         "title": "Write NEAR ecosystem summary",
         "description": "Research and summarize key ecosystem updates.",
-        "budget_amount": "4.0",
+        "budget_amount": "10.0",
         "bid_count": 3,
     }
     base.update(overrides)

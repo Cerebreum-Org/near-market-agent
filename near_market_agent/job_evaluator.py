@@ -165,12 +165,17 @@ class JobEvaluator:
         )
 
     def _preflight_filter(self, job: Job) -> str | None:
-        """Fast rule-based filter before LLM assessment. Returns skip reason or None."""
+        """Fast rule-based filter before LLM assessment. Returns skip reason or None.
+
+        Aggressively filters to minimize expensive Claude CLI calls.
+        Only jobs that genuinely need LLM evaluation should pass.
+        """
         if not job.title or not job.description:
             return "Missing title or description"
 
         title_lower = job.title.lower()
         desc_lower = job.description.lower()
+        combined = f"{title_lower} {desc_lower}"
 
         if job.is_expired:
             return "Job is expired"
@@ -178,26 +183,114 @@ class JobEvaluator:
         if job.budget_near < self.config.min_budget_near:
             return f"Budget too low ({job.budget_near} < {self.config.min_budget_near} NEAR)"
 
+        # --- Platform-specific jobs we can't do ---
+        # GPT Store / Custom GPT — requires OpenAI account
+        gpt_signals = ["custom gpt", "gpt store", "gpt -", "chatgpt plugin",
+                        "openai plugin", "gpts"]
+        for sig in gpt_signals:
+            if sig in title_lower:
+                return f"GPT Store/plugin job (matched: {sig})"
+
+        # AutoGPT plugins — requires AutoGPT ecosystem
+        if "autogpt" in title_lower:
+            return "AutoGPT plugin job"
+
+        # Poe bots — requires Poe platform
+        if "poe -" in title_lower or "poe bot" in title_lower:
+            return "Poe platform job"
+
+        # HuggingFace Spaces — requires HF account + deployment
+        if "huggingface" in title_lower or "hugging face" in title_lower:
+            return "HuggingFace platform job"
+
+        # Perplexity — platform-specific
+        if "perplexity" in title_lower:
+            return "Perplexity platform job"
+
+        # --- Multimedia / creative jobs ---
         multimedia_signals = [
             "create a video", "record a video", "make a video",
             "tiktok video", "youtube video", "record audio",
             "voice recording", "short video", "video demo", "video script",
+            "infographic", "graphic generator", "graphics generator",
+            "image generat", "logo design",
         ]
         for signal in multimedia_signals:
-            if signal in title_lower or signal in desc_lower:
-                return f"Multimedia creation job (matched: {signal})"
+            if signal in combined:
+                return f"Multimedia/creative job (matched: {signal})"
 
+        # --- Physical / real-world tasks ---
         physical_signals = [
             "pick up", "deliver to", "in-person", "photograph",
-            "plant a tree", "clean a car",
+            "plant a tree", "clean a car", "physical",
         ]
         for signal in physical_signals:
-            if signal in title_lower or signal in desc_lower:
+            if signal in combined:
                 return f"Physical task (matched: {signal})"
 
-        if "account growth" in title_lower or "manage account" in title_lower:
-            return "Requires social media account access"
+        # --- Social media account jobs ---
+        social_signals = [
+            "account growth", "manage account", "post on twitter",
+            "post on reddit", "reddit account", "twitter account",
+            "social media manager", "community engagement",
+            "developer community engagement",
+            "wikipedia presence", "wikipedia edit",
+            "answer bot - reddit", "answer bot - stack overflow",
+            "twitter mention monitor", "mention monitor",
+        ]
+        for signal in social_signals:
+            if signal in combined:
+                return f"Social media/account job (matched: {signal})"
 
+        # --- Low-value spam patterns ---
+        # "v2" / "v3" / "v4" bulk-posted jobs (marketplace spam — identical templates)
+        if " v2" in job.title or " v3" in job.title or " v4" in job.title:
+            # Allow high-budget v2/v3 jobs (competitions etc)
+            if job.budget_near < 15:
+                return f"Low-budget template job ({job.budget_near} NEAR, versioned)"
+
+        # npm/pypi package spam — hundreds of identical "build X package" at 1-8 NEAR
+        if ("npm package" in title_lower or "pypi package" in title_lower
+                or "npm package" in desc_lower):
+            if job.budget_near < 10:
+                return f"Low-budget package job ({job.budget_near} NEAR)"
+
+        # MCP server jobs — platform-specific busywork
+        if "mcp server" in title_lower:
+            if job.budget_near < 10:
+                return f"Low-budget MCP server job ({job.budget_near} NEAR)"
+
+        # LangChain tool jobs — low-value integrations
+        if "langchain" in title_lower:
+            if job.budget_near < 10:
+                return f"Low-budget LangChain job ({job.budget_near} NEAR)"
+
+        # Low-budget bot/extension/action jobs
+        bot_patterns = ["discord bot", "telegram bot", "slack bot",
+                        "chrome extension", "vs code extension",
+                        "github action", "openclaw skill"]
+        for pat in bot_patterns:
+            if pat in title_lower and job.budget_near < 10:
+                return f"Low-budget {pat} job ({job.budget_near} NEAR)"
+
+        # "Create GPT" in title but not caught by the GPT Store filter above
+        if "create gpt" in title_lower or "gpt:" in title_lower:
+            return "GPT creation job"
+
+        # --- Oversaturated jobs (too many bids) ---
+        if (job.bid_count or 0) > 10:
+            return f"Too many existing bids ({job.bid_count})"
+
+        # --- Minimum effective budget ---
+        # Below 5 NEAR isn't worth the compute to evaluate
+        if job.budget_near < 5:
+            return f"Budget below effective minimum ({job.budget_near} NEAR)"
+
+        # --- YouTube / course creation ---
+        if "youtube" in combined or "free course" in combined or "online course" in combined:
+            return "Course/YouTube creation job"
+
+        # --- Harmful/troll ---
         if "warhead" in title_lower or "nuclear warhead" in desc_lower:
             return "Obviously harmful/troll job"
 
