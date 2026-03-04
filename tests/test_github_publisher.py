@@ -96,7 +96,11 @@ class TestGhAvailable:
 class TestPublishWorkspace:
     @patch("near_market_agent.github_publisher.gh_available", return_value=False)
     def test_no_gh_returns_none(self, _):
-        result = publish_workspace("/tmp/fake", "Test", "abc123")
+        result = publish_workspace("/tmp/fake", "Test", "abc123", org="test-org")
+        assert result is None
+
+    def test_no_org_returns_none(self):
+        result = publish_workspace("/tmp/fake", "Test", "abc123", org="")
         assert result is None
 
     @patch("near_market_agent.github_publisher._run_cmd")
@@ -108,11 +112,29 @@ class TestPublishWorkspace:
 
             mock_cmd.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            result = publish_workspace(d, "Test Job", "abc12345")
-            assert result == "https://github.com/Cerebreum-Org/near-job-abc12345-test-job"
+            result = publish_workspace(d, "Test Job", "abc12345", org="my-org")
+            assert result == "https://github.com/my-org/near-job-abc12345-test-job"
 
             # JOB.md should be removed
             assert not os.path.exists(os.path.join(d, "JOB.md"))
+
+    @patch("near_market_agent.github_publisher._run_cmd")
+    @patch("near_market_agent.github_publisher.gh_available", return_value=True)
+    def test_custom_author(self, _, mock_cmd):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "file.txt").write_text("content")
+            mock_cmd.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+            publish_workspace(
+                d, "Test", "abc12345", org="test-org",
+                author_name="My Agent", author_email="me@example.com",
+            )
+            # Check the commit command included custom author
+            commit_calls = [
+                c for c in mock_cmd.call_args_list
+                if "commit" in str(c)
+            ]
+            assert any("My Agent" in str(c) for c in commit_calls)
 
     @patch("near_market_agent.github_publisher._run_cmd")
     @patch("near_market_agent.github_publisher.gh_available", return_value=True)
@@ -120,7 +142,7 @@ class TestPublishWorkspace:
         with tempfile.TemporaryDirectory() as d:
             Path(d, "file.txt").write_text("content")
             mock_cmd.return_value = MagicMock(returncode=1, stderr="fatal: error")
-            result = publish_workspace(d, "Test", "abc12345")
+            result = publish_workspace(d, "Test", "abc12345", org="test-org")
             assert result is None
 
     @patch("near_market_agent.github_publisher._run_cmd")
@@ -129,5 +151,5 @@ class TestPublishWorkspace:
         mock_cmd.side_effect = subprocess.TimeoutExpired("cmd", 30)
         with tempfile.TemporaryDirectory() as d:
             Path(d, "file.txt").write_text("content")
-            result = publish_workspace(d, "Test", "abc12345")
+            result = publish_workspace(d, "Test", "abc12345", org="test-org")
             assert result is None

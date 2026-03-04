@@ -1104,7 +1104,12 @@ class WorkEngine:
 
             # Step 8: Push code to GitHub for code deliverables
             if routing.tier in (JobTier.PACKAGE, JobTier.SERVICE, JobTier.SYSTEM):
-                repo_url = publish_workspace(workspace, job.title, job.job_id)
+                repo_url = publish_workspace(
+                    workspace, job.title, job.job_id,
+                    org=self.config.github_org,
+                    author_name=self.config.github_author_name,
+                    author_email=self.config.github_author_email,
+                )
                 result.repo_url = repo_url
                 if repo_url:
                     log.info(f"Code published to {repo_url}")

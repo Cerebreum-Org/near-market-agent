@@ -1,7 +1,10 @@
 """GitHub publisher — pushes workspace code to a GitHub repo.
 
 For code deliverables (PACKAGE, SERVICE, SYSTEM tiers), creates a public
-repo under the Cerebreum-Org and pushes all workspace files.
+repo under a configurable GitHub org/user and pushes all workspace files.
+
+Set GITHUB_ORG to your GitHub username or org name. If unset, GitHub
+publishing is skipped and deliverables are submitted as text only.
 """
 
 from __future__ import annotations
@@ -13,9 +16,6 @@ import subprocess
 from pathlib import Path
 
 log = logging.getLogger(__name__)
-
-# Organization to create repos under
-GITHUB_ORG = "Cerebreum-Org"
 
 # Default .gitignore for deliverables
 DEFAULT_GITIGNORE = """\
@@ -85,12 +85,26 @@ def publish_workspace(
     workspace: str,
     job_title: str,
     job_id: str,
-    org: str = GITHUB_ORG,
+    org: str = "",
+    author_name: str = "NEAR Market Agent",
+    author_email: str = "agent@market.near.ai",
 ) -> str | None:
     """Push workspace to a new GitHub repo.
 
+    Args:
+        workspace: Path to the workspace directory.
+        job_title: Job title (used in repo name).
+        job_id: Job ID (used for uniqueness).
+        org: GitHub org or username. If empty, publishing is skipped.
+        author_name: Git commit author name.
+        author_email: Git commit author email.
+
     Returns the repo URL on success, None on failure.
     """
+    if not org:
+        log.warning("GITHUB_ORG not set — cannot publish to GitHub")
+        return None
+
     if not gh_available():
         log.warning("gh CLI not found — cannot publish to GitHub")
         return None
@@ -120,8 +134,8 @@ def publish_workspace(
         _run_cmd("git add -A", workspace)
 
         result = _run_cmd(
-            'git commit -m "Deliverable for market.near.ai job"'
-            ' --author="Cerebreum Agent <agent@cerebreum.org>"',
+            f'git commit -m "Deliverable for market.near.ai job"'
+            f' --author="{author_name} <{author_email}>"',
             workspace,
         )
         if result.returncode != 0:

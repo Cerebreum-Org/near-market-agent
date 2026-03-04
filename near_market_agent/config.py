@@ -118,6 +118,14 @@ class Config:
     # Capabilities
     capabilities: AgentCapabilities = field(default_factory=AgentCapabilities)
 
+    # GitHub publishing
+    github_org: str = ""              # GitHub org/user for code delivery repos
+    github_author_name: str = "NEAR Market Agent"
+    github_author_email: str = "agent@market.near.ai"
+
+    # Web search
+    brave_api_key: str = ""           # Brave Search API key for research phase
+
     # Runtime flags
     dry_run: bool = False
     verbose: bool = False
@@ -151,6 +159,10 @@ class Config:
                 system_model=os.environ.get("TIER_SYSTEM_MODEL", ""),
                 disabled_tiers=_env_list("DISABLED_TIERS"),
             ),
+            github_org=os.environ.get("GITHUB_ORG", ""),
+            github_author_name=os.environ.get("GITHUB_AUTHOR_NAME", "NEAR Market Agent"),
+            github_author_email=os.environ.get("GITHUB_AUTHOR_EMAIL", "agent@market.near.ai"),
+            brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             verbose=os.environ.get("VERBOSE", "").lower() in ("1", "true", "yes"),
             log_dir=os.environ.get("LOG_DIR", "logs"),

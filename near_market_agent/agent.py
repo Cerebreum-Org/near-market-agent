@@ -69,8 +69,13 @@ class MarketAgent:
             else:
                 self.log.warn(f"  ✗ {tool} not found — {desc}")
 
-        # Environment variables
-        if os.environ.get("BRAVE_API_KEY"):
+        # Environment variables / config
+        if self.config.market_api_key:
+            self.log.info("  ✓ NEAR_MARKET_API_KEY set")
+        else:
+            self.log.warn("  ✗ NEAR_MARKET_API_KEY not set — API calls will fail")
+
+        if self.config.brave_api_key:
             self.log.info("  ✓ BRAVE_API_KEY set")
         else:
             self.log.warn(
@@ -78,10 +83,13 @@ class MarketAgent:
                 "research phase will rely on package lookups and LLM knowledge only"
             )
 
-        if os.environ.get("NEAR_MARKET_API_KEY"):
-            self.log.info("  ✓ NEAR_MARKET_API_KEY set")
+        if self.config.github_org:
+            self.log.info(f"  ✓ GITHUB_ORG = {self.config.github_org}")
         else:
-            self.log.warn("  ✗ NEAR_MARKET_API_KEY not set — API calls will fail")
+            self.log.warn(
+                "  ✗ GITHUB_ORG not set — code deliverables will be submitted "
+                "as text only (no GitHub repo push)"
+            )
 
         self.log.action("Readiness check complete")
 
