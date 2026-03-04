@@ -3,8 +3,10 @@
 Pipeline:
     Job → Route (classify tier) → Deep Research (web search, package lookup, docs)
       → Setup workspace (with RESEARCH.md) → Run builder agent → Code-simplify
-      → Review 1 (Requirements) → Review 2 (Quality) → Review 3 (Final Gate)
-      → Package deliverable → Submit
+      → Alignment check → Fix gaps (if any) → Code-simplify → 3x Review → Submit
+
+Code-simplifier runs continuously: after initial build, after each alignment fix,
+and before final review — ensuring clean, maintainable code at every stage.
 """
 
 from __future__ import annotations
@@ -184,11 +186,13 @@ class WorkResult:
 
 
 class WorkEngine:
-    """Agentic work engine with tiered builders and 3-stage review.
+    """Agentic work engine with tiered builders, continuous simplification, and 3-stage review.
 
     Pipeline:
-        Route → Setup workspace → Run builder agent → Code-simplify
-          → Review 1 → Review 2 → Review 3 → Package
+        Route → Research → Setup workspace → Build → Simplify → Align check
+          → Fix gaps (if any) → Simplify → 3x Review → Submit
+
+    Code-simplifier runs after every major code-producing step.
     """
 
     MAX_REVISIONS_PER_STAGE = 2
@@ -620,6 +624,19 @@ class WorkEngine:
             # Step 5: Run builder agent
             content = self._run_builder(job, routing, workspace)
 
+            # Step 5a: Code-simplify (post-build)
+            log.info("Running code-simplifier (post-build)")
+            self._simplify(job, workspace, routing)
+
+            # Re-collect after simplification
+            if routing.tier != JobTier.TEXT or not content:
+                content, files = self._collect_deliverable(workspace, routing)
+            else:
+                deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
+                if os.path.exists(deliverable_path):
+                    content = Path(deliverable_path).read_text()
+                files = []
+
             # CHECKPOINT 2: Post-build alignment
             build_report = self.alignment.check_alignment(
                 "post-build",
@@ -629,7 +646,7 @@ class WorkEngine:
             alignment_reports.append(build_report)
             log.info(f"Checkpoint 2: {build_report.summary()}")
 
-            # If critical gaps found, run a targeted fix before simplification
+            # If critical gaps found, fix then simplify again
             if build_report.critical_gaps:
                 log.warning(
                     f"Post-build alignment found {len(build_report.critical_gaps)} critical gaps — "
@@ -639,17 +656,18 @@ class WorkEngine:
                     job, content, build_report, workspace, routing,
                 )
 
-            # Step 6: Code-simplify
-            self._simplify(job, workspace, routing)
+                # Code-simplify again after gap fix
+                log.info("Running code-simplifier (post-fix)")
+                self._simplify(job, workspace, routing)
 
-            # Re-collect after simplification (files may have changed)
-            if routing.tier != JobTier.TEXT or not content:
-                content, files = self._collect_deliverable(workspace, routing)
-            else:
-                deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
-                if os.path.exists(deliverable_path):
-                    content = Path(deliverable_path).read_text()
-                files = []
+                # Re-collect after simplification
+                if routing.tier != JobTier.TEXT or not content:
+                    content, files = self._collect_deliverable(workspace, routing)
+                else:
+                    deliverable_path = os.path.join(workspace, "DELIVERABLE.md")
+                    if os.path.exists(deliverable_path):
+                        content = Path(deliverable_path).read_text()
+                    files = []
 
             # CHECKPOINT 3: Pre-submit alignment
             submit_report = self.alignment.check_alignment(
@@ -688,6 +706,8 @@ class WorkEngine:
             try:
                 Path(workspace, "PREVIOUS_DELIVERABLE.md").write_text(original)
                 revised = self._revise_agentic(job, routing, workspace, feedback)
+                # Simplify after revision
+                self._simplify(job, workspace, routing)
                 return self._run_review_pipeline(job, revised, routing.tier.value)
             finally:
                 shutil.rmtree(workspace, ignore_errors=True)
