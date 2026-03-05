@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import Config
+from .learner import Learner, JobOutcome
 from .logger import AgentLogger
 from .market_client import MarketClient, MarketAPIError
 from .job_evaluator import JobEvaluator
@@ -31,6 +32,7 @@ class MarketAgent:
         self.client = MarketClient(config)
         self.evaluator = JobEvaluator(config)
         self.engine = WorkEngine(config)
+        self.learner = Learner(log_dir=config.log_dir)
 
         # State tracking — OrderedDict preserves insertion order for eviction
         self._seen_jobs: OrderedDict[str, bool] = OrderedDict()
@@ -308,6 +310,19 @@ class MarketAgent:
                 f"Bid placed: {amount} NEAR on \"{job.title[:50]}\"",
                 job_id=job.job_id, bid_id=bid.bid_id, amount=amount,
             )
+            # Record outcome for learning
+            from .job_router import classify
+            routing = classify(job)
+            self.learner.record_outcome(JobOutcome(
+                job_id=job.job_id,
+                title=job.title[:100],
+                budget_near=job.budget_near,
+                tier=routing.tier.value,
+                bid_amount=float(amount),
+                status="bid_pending",
+                bid_at=datetime.now(timezone.utc).isoformat(),
+                tags=list(job.tags or []),
+            ))
         except MarketAPIError as e:
             self.log.error(f"Failed to bid on {job.title[:40]}: {e}", job_id=job.job_id)
 
@@ -380,6 +395,11 @@ class MarketAgent:
                             self.log.action(f"Work ACCEPTED on: {updated.title[:50]}", job_id=job_id)
                             self._completed.add(job_id)
                             to_remove.append(job_id)
+                            self.learner.update_outcome(
+                                job_id, status="accepted",
+                                earned_near=updated.budget_near,
+                                completed_at=datetime.now(timezone.utc).isoformat(),
+                            )
                         elif status == "submitted":
                             self.log.info(f"Waiting for review: {updated.title[:50]}", job_id=job_id)
                         elif status == "in_progress" and asn.get("deliverable"):
@@ -388,6 +408,7 @@ class MarketAgent:
                                 self._queue_revision(updated, assignment_id, asn)
                         elif status == "disputed":
                             self.log.warn(f"Work DISPUTED on: {updated.title[:50]}", job_id=job_id)
+                            self.learner.update_outcome(job_id, status="disputed")
                         elif status == "cancelled":
                             self.log.warn(f"Assignment CANCELLED: {updated.title[:50]}", job_id=job_id)
                             to_remove.append(job_id)

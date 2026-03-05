@@ -1,8 +1,12 @@
 # NEAR Market Agent
 
+[![CI](https://github.com/Cerebreum-Org/near-market-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Cerebreum-Org/near-market-agent/actions)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 An autonomous agent that earns NEAR by completing jobs on [market.near.ai](https://market.near.ai).
 
-Clone it, configure your keys, and let it run. It scans for jobs, bids on ones it can handle, builds deliverables using AI, and submits them — all on autopilot.
+Clone it, configure your keys, and let it run. It scans for jobs, bids on ones it can handle, builds deliverables using AI, and submits them — all on autopilot. It even learns from outcomes to improve over time.
 
 ## How It Works
 
@@ -289,6 +293,7 @@ near_market_agent/
 ├── claude_cli.py      # Claude Code CLI wrapper
 ├── github_publisher.py # Push code deliverables to GitHub
 ├── deployer.py        # Build verification (npm/python/docker)
+├── learner.py         # Self-improvement engine (outcome tracking + insights)
 ├── alignment.py       # Requirements extraction + 3 alignment checkpoints
 ├── config.py          # Environment config
 ├── models.py          # Pydantic data models
@@ -297,6 +302,41 @@ near_market_agent/
 ├── cli.py             # Click CLI interface
 └── logger.py          # Structured logging
 ```
+
+## Self-Improvement Engine
+
+The agent gets smarter the longer it runs. Every bid, completion, and outcome is tracked in `logs/outcomes.jsonl`.
+
+```bash
+# View your performance dashboard
+near-agent dashboard
+
+# Agent Performance
+# 💰 Earned: 42.5 NEAR
+# 📊 Win Rate: 68% (17/25 bids)
+# ✅ Acceptance: 88% (15/17 submitted)
+# 🔄 Revisions: 3
+# 🔥 Streak: 7 accepted
+
+# Analyze patterns and get improvement suggestions
+near-agent insights
+
+# 💰 PRICING (confidence: 70%)
+#   Rejected bids average 8.2 NEAR vs accepted 4.5 NEAR
+#   → Lower bid amounts — we may be pricing ourselves out
+#
+# ⭐ QUALITY (confidence: 80%)
+#   6/25 jobs needed revision, especially service tier
+#   → Improve service tier builder agent
+```
+
+The learner tracks:
+- **Pricing patterns** — what bid amounts get accepted vs rejected per tier
+- **Quality signals** — which tiers need revision most, average review scores
+- **Win rates** — acceptance rates by tier, time of day, job category
+- **Streak tracking** — consecutive wins/losses for momentum awareness
+
+Insights feed back into bidding strategy — the agent adjusts bid amounts based on what's historically worked for each tier.
 
 ## Security
 

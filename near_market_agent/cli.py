@@ -192,5 +192,82 @@ def work(ctx, job_id: str):
     asyncio.run(_work())
 
 
+@cli.command()
+@click.pass_context
+def dashboard(ctx):
+    """Show performance dashboard — earnings, win rate, insights."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from .learner import Learner
+
+    config: Config = ctx.obj["config"]
+    learner = Learner(log_dir=config.log_dir)
+    stats = learner.compute_stats()
+
+    # Stats panel
+    console.print(Panel(
+        f"[bold green]💰 Earned:[/] {stats.total_earned_near:.1f} NEAR\n"
+        f"[bold]📊 Win Rate:[/] {stats.win_rate:.0%} ({stats.bids_accepted}/{stats.total_bids} bids)\n"
+        f"[bold]✅ Acceptance:[/] {stats.acceptance_rate:.0%} ({stats.jobs_accepted}/{stats.jobs_completed} submitted)\n"
+        f"[bold]🔄 Revisions:[/] {stats.total_revisions}\n"
+        f"[bold]🔥 Streak:[/] {stats.streak} accepted",
+        title="[bold cyan]Agent Performance[/]",
+        border_style="cyan",
+    ))
+
+    # Bids table
+    table = Table(title="Bid Status")
+    table.add_column("Status", style="bold")
+    table.add_column("Count", justify="right")
+    table.add_row("Pending", str(stats.bids_pending))
+    table.add_row("[green]Accepted[/]", str(stats.bids_accepted))
+    table.add_row("[red]Rejected[/]", str(stats.bids_rejected))
+    table.add_row("[yellow]Disputed[/]", str(stats.jobs_disputed))
+    console.print(table)
+
+    # Quality metrics
+    if stats.avg_review_score > 0:
+        console.print(f"\n[bold]Quality Metrics:[/]")
+        console.print(f"  Avg Review Score: {stats.avg_review_score:.2f}/1.0")
+        console.print(f"  Avg Build Time: {stats.avg_build_time_seconds:.0f}s")
+        if stats.best_tier:
+            console.print(f"  Best Tier: [green]{stats.best_tier}[/]")
+        if stats.worst_tier:
+            console.print(f"  Worst Tier: [red]{stats.worst_tier}[/]")
+
+    # Learning insights
+    insights = learner.analyze_patterns()
+    if insights:
+        console.print(f"\n[bold yellow]💡 Learning Insights:[/]")
+        for i in insights:
+            console.print(f"  [{i.category}] {i.insight}")
+            console.print(f"    → [dim]{i.action}[/]")
+    elif len(learner._outcomes) < 5:
+        console.print(f"\n[dim]Need more data for insights (have {len(learner._outcomes)}, need 5+)[/]")
+    else:
+        console.print(f"\n[dim]No actionable insights yet[/]")
+
+
+@cli.command()
+@click.pass_context
+def insights(ctx):
+    """Analyze patterns and show learning insights."""
+    from .learner import Learner
+
+    config: Config = ctx.obj["config"]
+    learner = Learner(log_dir=config.log_dir)
+    results = learner.analyze_patterns()
+
+    if not results:
+        console.print("[dim]No insights yet — need more outcome data[/]")
+        return
+
+    for i in results:
+        emoji = {"pricing": "💰", "quality": "⭐", "tier": "📊", "timing": "⏱"}.get(i.category, "💡")
+        console.print(f"\n{emoji} [bold]{i.category.upper()}[/] (confidence: {i.confidence:.0%})")
+        console.print(f"  {i.insight}")
+        console.print(f"  → [green]{i.action}[/]")
+
+
 if __name__ == "__main__":
     cli()
