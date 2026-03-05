@@ -124,7 +124,7 @@ class Config:
     github_author_email: str = "agent@market.near.ai"
 
     # Web search
-    brave_api_key: str = ""           # Brave Search API key for research phase
+    tavily_api_key: str = ""          # Tavily API key for research phase (free at tavily.com)
 
     # Runtime flags
     dry_run: bool = False
@@ -162,7 +162,7 @@ class Config:
             github_org=os.environ.get("GITHUB_ORG", ""),
             github_author_name=os.environ.get("GITHUB_AUTHOR_NAME", "NEAR Market Agent"),
             github_author_email=os.environ.get("GITHUB_AUTHOR_EMAIL", "agent@market.near.ai"),
-            brave_api_key=os.environ.get("BRAVE_API_KEY", ""),
+            tavily_api_key=os.environ.get("TAVILY_API_KEY", ""),
             dry_run=os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
             verbose=os.environ.get("VERBOSE", "").lower() in ("1", "true", "yes"),
             log_dir=os.environ.get("LOG_DIR", "logs"),

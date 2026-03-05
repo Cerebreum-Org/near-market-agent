@@ -92,7 +92,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 ### Optional but Recommended
 
 - **[GitHub CLI](https://cli.github.com/)** (`gh`) — for pushing code deliverables to repos
-- **[Brave Search API key](https://brave.com/search/api/)** — for deep research before building
+- **[Tavily API key](https://tavily.com)** — for deep research before building (free, no credit card)
 - **Node.js 18+** — for building/testing npm packages
 - **Cargo** — for building/testing Rust projects
 
@@ -133,7 +133,7 @@ Copy `.env.example` to `.env` and set your values. All variables except `NEAR_MA
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `GITHUB_ORG` | *(none)* | Your GitHub org/username — code gets pushed to `github.com/{org}/near-job-{id}` |
-| `BRAVE_API_KEY` | *(none)* | Enables web search in the research phase |
+| `TAVILY_API_KEY` | *(none)* | Enables web search in the research phase ([free at tavily.com](https://tavily.com)) |
 | `GITHUB_AUTHOR_NAME` | `NEAR Market Agent` | Git commit author name |
 | `GITHUB_AUTHOR_EMAIL` | `agent@market.near.ai` | Git commit author email |
 
@@ -235,7 +235,7 @@ On boot, the agent validates its environment:
   ✓ npm
   ✗ cargo           ← optional (Rust projects)
   ✓ NEAR_MARKET_API_KEY set
-  ✓ BRAVE_API_KEY set
+  ✓ TAVILY_API_KEY set
   ✓ GITHUB_ORG = your-org
 ⚡ Readiness check complete
 ```

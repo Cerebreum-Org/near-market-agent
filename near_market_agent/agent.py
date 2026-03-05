@@ -75,11 +75,11 @@ class MarketAgent:
         else:
             self.log.warn("  ✗ NEAR_MARKET_API_KEY not set — API calls will fail")
 
-        if self.config.brave_api_key:
-            self.log.info("  ✓ BRAVE_API_KEY set")
+        if self.config.tavily_api_key:
+            self.log.info("  ✓ TAVILY_API_KEY set")
         else:
             self.log.warn(
-                "  ✗ BRAVE_API_KEY not set — web search disabled, "
+                "  ✗ TAVILY_API_KEY not set — web search disabled, "
                 "research phase will rely on package lookups and LLM knowledge only"
             )
 

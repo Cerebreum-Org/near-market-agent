@@ -65,30 +65,52 @@ Output clean markdown."""
 
 
 def _run_web_search(query: str, count: int = 5) -> list[dict]:
-    """Run a web search using the system's search capability.
+    """Run a web search via Tavily API.
 
-    Falls back gracefully if no search tool is available.
+    Falls back gracefully if no API key is available.
     """
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
+        return []
+
     try:
+        payload = json.dumps({
+            "query": query,
+            "max_results": count,
+            "search_depth": "basic",
+            "include_answer": False,
+        })
         result = subprocess.run(
             ["node", "-e", f"""
 const https = require('https');
-const q = {json.dumps(query)};
-const url = `https://api.search.brave.com/res/v1/web/search?q=${{encodeURIComponent(q)}}&count={count}`;
-const key = process.env.BRAVE_API_KEY || '';
-if (!key) {{ console.log(JSON.stringify([])); process.exit(0); }}
-const req = https.request(url, {{headers: {{'X-Subscription-Token': key, 'Accept': 'application/json'}}}}, (res) => {{
-    let data = '';
-    res.on('data', c => data += c);
+const data = {json.dumps(payload)};
+const options = {{
+    hostname: 'api.tavily.com',
+    path: '/search',
+    method: 'POST',
+    headers: {{
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + {json.dumps(api_key)},
+        'Content-Length': Buffer.byteLength(data),
+    }},
+}};
+const req = https.request(options, (res) => {{
+    let body = '';
+    res.on('data', c => body += c);
     res.on('end', () => {{
         try {{
-            const j = JSON.parse(data);
-            const results = (j.web?.results || []).map(r => ({{title: r.title, url: r.url, snippet: r.description}}));
+            const j = JSON.parse(body);
+            const results = (j.results || []).map(r => ({{
+                title: r.title || '',
+                url: r.url || '',
+                snippet: r.content || '',
+            }}));
             console.log(JSON.stringify(results));
         }} catch(e) {{ console.log(JSON.stringify([])); }}
     }});
 }});
 req.on('error', () => console.log(JSON.stringify([])));
+req.write(data);
 req.end();
 """],
             capture_output=True, text=True, timeout=15,
@@ -250,10 +272,10 @@ class Researcher:
         safe_title = sanitize_text(job_title, max_length=500)
         safe_desc = sanitize_text(job_description, max_length=8000)
 
-        has_brave_key = bool(os.environ.get("BRAVE_API_KEY"))
-        if not has_brave_key:
+        has_search_key = bool(os.environ.get("TAVILY_API_KEY"))
+        if not has_search_key:
             log.warning(
-                "BRAVE_API_KEY not set — web search disabled. "
+                "TAVILY_API_KEY not set — web search disabled. "
                 "Research will rely on package lookups and LLM knowledge only."
             )
 
@@ -265,7 +287,7 @@ class Researcher:
         raw_materials: list[str] = []
         sources: list[str] = []
 
-        if has_brave_key:
+        if has_search_key:
             for query in topics.get("search_queries", [])[:8]:
                 log.info(f"Research: searching '{query}'")
                 results = _run_web_search(query)
@@ -277,7 +299,7 @@ class Researcher:
                     )
                     sources.append(r.get("url", ""))
         else:
-            log.info("Research: skipping web search (no BRAVE_API_KEY)")
+            log.info("Research: skipping web search (no TAVILY_API_KEY)")
 
         # Step 3: Look up packages
         packages_found = []
