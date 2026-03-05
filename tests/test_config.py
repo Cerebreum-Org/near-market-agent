@@ -83,4 +83,3 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("POLL_INTERVAL must be >= 1", errors)
         self.assertIn("BID_THRESHOLD must be between 0 and 1", errors)
         self.assertIn("MAX_TOKENS must be >= 1", errors)
-

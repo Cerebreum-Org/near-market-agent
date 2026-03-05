@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from near_market_agent.job_router import classify, JobTier
+from near_market_agent.job_router import JobTier, classify
 from near_market_agent.models import Job
 
 
@@ -33,10 +33,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.tier, JobTier.TEXT)
 
     def test_documentation_is_text(self) -> None:
-        result = classify(_job(
-            title="NEAR Gas Documentation",
-            description="Write comprehensive documentation about NEAR gas fees.",
-        ))
+        result = classify(
+            _job(
+                title="NEAR Gas Documentation",
+                description="Write comprehensive documentation about NEAR gas fees.",
+            )
+        )
         self.assertEqual(result.tier, JobTier.TEXT)
 
     # --- Tier 2: Package ---
@@ -53,10 +55,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.language, "python")
 
     def test_mcp_server_is_package(self) -> None:
-        result = classify(_job(
-            title="Build MCP Server: NEAR Wallet Operations",
-            tags=["mcp", "near"],
-        ))
+        result = classify(
+            _job(
+                title="Build MCP Server: NEAR Wallet Operations",
+                tags=["mcp", "near"],
+            )
+        )
         self.assertEqual(result.tier, JobTier.PACKAGE)
         self.assertEqual(result.template, "mcp-server")
 
@@ -80,10 +84,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.tier, JobTier.SERVICE)
 
     def test_telegram_bot_is_service(self) -> None:
-        result = classify(_job(
-            title="Build Telegram Bot for NEAR",
-            description="Create a telegram bot that tracks NEAR transactions.",
-        ))
+        result = classify(
+            _job(
+                title="Build Telegram Bot for NEAR",
+                description="Create a telegram bot that tracks NEAR transactions.",
+            )
+        )
         self.assertEqual(result.tier, JobTier.SERVICE)
 
     # --- Tier 4: System ---
@@ -94,10 +100,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.agent, "system-builder")
 
     def test_swarm_is_system(self) -> None:
-        result = classify(_job(
-            title="Agent Swarm Framework",
-            description="Build orchestration for multi-agent swarm on NEAR.",
-        ))
+        result = classify(
+            _job(
+                title="Agent Swarm Framework",
+                description="Build orchestration for multi-agent swarm on NEAR.",
+            )
+        )
         self.assertEqual(result.tier, JobTier.SYSTEM)
 
     # --- Language detection ---
@@ -107,10 +115,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(result.language, "python")
 
     def test_rust_in_description(self) -> None:
-        result = classify(_job(
-            title="Build NEAR Contract Helper",
-            description="Use Rust and near-sdk-rs to build a helper tool.",
-        ))
+        result = classify(
+            _job(
+                title="Build NEAR Contract Helper",
+                description="Use Rust and near-sdk-rs to build a helper tool.",
+            )
+        )
         self.assertEqual(result.language, "rust")
 
     def test_default_language_is_typescript(self) -> None:
@@ -121,10 +131,12 @@ class ClassifyTests(unittest.TestCase):
 
     def test_build_guide_is_text_not_package(self) -> None:
         """'Build' in title but 'guide' too → text wins."""
-        result = classify(_job(
-            title="Write guide about building on NEAR",
-            description="Write a comprehensive guide about building dApps on NEAR.",
-        ))
+        result = classify(
+            _job(
+                title="Write guide about building on NEAR",
+                description="Write a comprehensive guide about building dApps on NEAR.",
+            )
+        )
         self.assertEqual(result.tier, JobTier.TEXT)
 
     def test_empty_description(self) -> None:

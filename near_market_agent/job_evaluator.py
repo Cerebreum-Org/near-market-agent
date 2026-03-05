@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 
-from .config import Config
-from .models import Job, JobEvaluation
 from .claude_cli import ClaudeCLI
-from .json_utils import extract_json
+from .config import Config
 from .job_router import classify
+from .json_utils import extract_json
+from .models import Job, JobEvaluation
 from .sanitize import sanitize_job
-
 
 EVAL_SYSTEM = """You are an autonomous agent evaluating freelance jobs on market.near.ai.
 You are a versatile AI agent that can handle virtually ANY job. You should bid aggressively.
@@ -68,7 +67,9 @@ Description:
 
 def _skip_result(job_id: str, reason: str) -> JobEvaluation:
     """Create a skip evaluation (score 0, no bid)."""
-    return JobEvaluation(job_id=job_id, score=0.0, should_bid=False, reasoning=reason, category="skip")
+    return JobEvaluation(
+        job_id=job_id, score=0.0, should_bid=False, reasoning=reason, category="skip"
+    )
 
 
 def _positive_or_none(value, cast=float):
@@ -190,7 +191,9 @@ class JobEvaluator:
             async with sem:
                 try:
                     return await asyncio.to_thread(
-                        self.evaluate_job, job, skip_preflight=True,
+                        self.evaluate_job,
+                        job,
+                        skip_preflight=True,
                     )
                 except Exception as e:
                     return _skip_result(job.job_id, f"Assessment error: {e}")

@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import json
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from near_market_agent.researcher import (
-    Researcher,
     ResearchBrief,
-    _lookup_npm_package,
-    _lookup_pypi_package,
+    Researcher,
 )
 
 
@@ -20,12 +18,14 @@ class ResearcherTests(unittest.TestCase):
     def test_extract_topics_parses_llm_response(self) -> None:
         """LLM topic extraction returns structured data."""
         mock_claude = MagicMock()
-        mock_claude.create_message.return_value = json.dumps({
-            "search_queries": ["NEAR Protocol SDK docs", "MCP server tutorial"],
-            "packages": {"npm": ["near-api-js"], "pypi": ["near-sdk"]},
-            "doc_urls": ["https://docs.near.org"],
-            "key_technologies": ["NEAR", "MCP"],
-        })
+        mock_claude.create_message.return_value = json.dumps(
+            {
+                "search_queries": ["NEAR Protocol SDK docs", "MCP server tutorial"],
+                "packages": {"npm": ["near-api-js"], "pypi": ["near-sdk"]},
+                "doc_urls": ["https://docs.near.org"],
+                "key_technologies": ["NEAR", "MCP"],
+            }
+        )
 
         researcher = Researcher(mock_claude)
         topics = researcher._extract_topics("Build MCP server", "Create an MCP server for NEAR")
@@ -75,12 +75,14 @@ class ResearcherTests(unittest.TestCase):
         mock_claude = MagicMock()
         mock_claude.create_message.side_effect = [
             # First call: extract topics
-            json.dumps({
-                "search_queries": ["NEAR SDK docs"],
-                "packages": {"npm": ["near-api-js"], "pypi": []},
-                "doc_urls": [],
-                "key_technologies": ["NEAR"],
-            }),
+            json.dumps(
+                {
+                    "search_queries": ["NEAR SDK docs"],
+                    "packages": {"npm": ["near-api-js"], "pypi": []},
+                    "doc_urls": [],
+                    "key_technologies": ["NEAR"],
+                }
+            ),
             # Second call: synthesize
             "# Research Brief\n\nNEAR API documentation and patterns...",
         ]
@@ -109,12 +111,14 @@ class ResearcherTests(unittest.TestCase):
         mock_search.return_value = []
 
         mock_claude = MagicMock()
-        mock_claude.create_message.return_value = json.dumps({
-            "search_queries": ["obscure thing"],
-            "packages": {"npm": [], "pypi": []},
-            "doc_urls": [],
-            "key_technologies": ["something rare"],
-        })
+        mock_claude.create_message.return_value = json.dumps(
+            {
+                "search_queries": ["obscure thing"],
+                "packages": {"npm": [], "pypi": []},
+                "doc_urls": [],
+                "key_technologies": ["something rare"],
+            }
+        )
 
         researcher = Researcher(mock_claude)
         brief = researcher.research_job("Build something rare", "Very niche job description")

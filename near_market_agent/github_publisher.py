@@ -36,8 +36,15 @@ coverage/
 
 # Dirs to exclude from git add
 _SKIP_DIRS = {
-    "node_modules", ".venv", "venv", "__pycache__",
-    "dist", "build", ".tox", "coverage", ".mypy_cache",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "dist",
+    "build",
+    ".tox",
+    "coverage",
+    ".mypy_cache",
     ".git",
 }
 
@@ -45,8 +52,12 @@ _SKIP_DIRS = {
 def _run_cmd(cmd: str, cwd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a shell command, capturing output."""
     return subprocess.run(
-        cmd, shell=True, cwd=cwd,
-        capture_output=True, text=True, timeout=timeout,
+        cmd,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -119,8 +130,13 @@ def publish_workspace(
         _ensure_gitignore(workspace)
 
         # Remove meta files that shouldn't be in the deliverable
-        for meta in ["JOB.md", "REQUIREMENTS.md", "NEAR-REFERENCE.md",
-                      "RESEARCH.md", "ALIGNMENT_REPORT.md"]:
+        for meta in [
+            "JOB.md",
+            "REQUIREMENTS.md",
+            "NEAR-REFERENCE.md",
+            "RESEARCH.md",
+            "ALIGNMENT_REPORT.md",
+        ]:
             meta_path = os.path.join(workspace, meta)
             if os.path.exists(meta_path):
                 os.remove(meta_path)
@@ -144,8 +160,9 @@ def publish_workspace(
 
         # Create repo via gh CLI
         result = _run_cmd(
-            f'gh repo create {full_name} --public --source=. --push',
-            workspace, timeout=60,
+            f"gh repo create {full_name} --public --source=. --push",
+            workspace,
+            timeout=60,
         )
         if result.returncode != 0:
             stderr = result.stderr.strip()

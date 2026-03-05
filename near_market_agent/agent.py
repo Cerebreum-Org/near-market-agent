@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 import signal
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .config import Config
-from .learner import Learner, JobOutcome
-from .logger import AgentLogger
-from .market_client import MarketClient, MarketAPIError
 from .job_evaluator import JobEvaluator
+from .learner import JobOutcome, Learner
+from .logger import AgentLogger
+from .market_client import MarketAPIError, MarketClient
+from .models import Bid, BidStatus, Job, JobEvaluation
 from .work_engine import WorkEngine, cleanup_stale_workspaces
-from .models import Job, Bid, BidStatus, JobEvaluation
 
 
 class MarketAgent:
@@ -53,8 +52,7 @@ class MarketAgent:
         # Fatal: claude CLI is required for all work
         if not shutil.which("claude"):
             self.log.error(
-                "FATAL: 'claude' CLI not found on PATH. "
-                "Cannot build deliverables without it."
+                "FATAL: 'claude' CLI not found on PATH. Cannot build deliverables without it."
             )
             raise SystemExit(1)
 
@@ -165,7 +163,9 @@ class MarketAgent:
                 self.log.scan_results(jobs, assessments)
 
                 bidworthy = [e for e in assessments if e.should_bid]
-                self.log.info(f"Assessment complete: {len(bidworthy)}/{len(assessments)} worth bidding on")
+                self.log.info(
+                    f"Assessment complete: {len(bidworthy)}/{len(assessments)} worth bidding on"
+                )
                 return jobs, assessments
             except MarketAPIError as e:
                 self.log.error(f"Scan failed: {e}")
@@ -213,9 +213,12 @@ class MarketAgent:
 
         while True:
             batch = await self.client.list_jobs(
-                status="open", job_type="standard",
-                sort="budget_amount", order="desc",
-                limit=100, offset=offset,
+                status="open",
+                job_type="standard",
+                sort="budget_amount",
+                order="desc",
+                limit=100,
+                offset=offset,
             )
             if not batch:
                 break
@@ -250,10 +253,13 @@ class MarketAgent:
 
         # Bid on worthy jobs (must pass both LLM should_bid AND confidence threshold)
         bidworthy = sorted(
-            [e for e in assessments
-             if e.should_bid
-             and e.score >= self.config.bid_confidence_threshold
-             and e.job_id not in self._bid_jobs],
+            [
+                e
+                for e in assessments
+                if e.should_bid
+                and e.score >= self.config.bid_confidence_threshold
+                and e.job_id not in self._bid_jobs
+            ],
             key=lambda e: e.score,
             reverse=True,
         )
@@ -285,7 +291,9 @@ class MarketAgent:
         proposal = assessment.proposal_draft
 
         if not proposal or not proposal.strip():
-            self.log.warn(f"Empty proposal for {job.title[:40]}, generating fallback", job_id=job.job_id)
+            self.log.warn(
+                f"Empty proposal for {job.title[:40]}, generating fallback", job_id=job.job_id
+            )
             proposal = (
                 f"I can complete this job efficiently. My capabilities include "
                 f"{', '.join(self.config.capabilities.skills[:5])}. "
@@ -295,34 +303,43 @@ class MarketAgent:
         if self.config.dry_run:
             self.log.decision(
                 f"[DRY RUN] Would bid {amount} NEAR on: {job.title[:60]}",
-                job_id=job.job_id, amount=amount, eta_hours=eta // 3600,
+                job_id=job.job_id,
+                amount=amount,
+                eta_hours=eta // 3600,
             )
             return
 
         try:
             bid = await self.client.place_bid(
-                job_id=job.job_id, amount=amount,
-                eta_seconds=eta, proposal=proposal,
+                job_id=job.job_id,
+                amount=amount,
+                eta_seconds=eta,
+                proposal=proposal,
             )
             self._active_bids[bid.bid_id] = bid
             self._bid_jobs.add(job.job_id)
             self.log.action(
-                f"Bid placed: {amount} NEAR on \"{job.title[:50]}\"",
-                job_id=job.job_id, bid_id=bid.bid_id, amount=amount,
+                f'Bid placed: {amount} NEAR on "{job.title[:50]}"',
+                job_id=job.job_id,
+                bid_id=bid.bid_id,
+                amount=amount,
             )
             # Record outcome for learning
             from .job_router import classify
+
             routing = classify(job)
-            self.learner.record_outcome(JobOutcome(
-                job_id=job.job_id,
-                title=job.title[:100],
-                budget_near=job.budget_near,
-                tier=routing.tier.value,
-                bid_amount=float(amount),
-                status="bid_pending",
-                bid_at=datetime.now(timezone.utc).isoformat(),
-                tags=list(job.tags or []),
-            ))
+            self.learner.record_outcome(
+                JobOutcome(
+                    job_id=job.job_id,
+                    title=job.title[:100],
+                    budget_near=job.budget_near,
+                    tier=routing.tier.value,
+                    bid_amount=float(amount),
+                    status="bid_pending",
+                    bid_at=datetime.now(UTC).isoformat(),
+                    tags=list(job.tags or []),
+                )
+            )
         except MarketAPIError as e:
             self.log.error(f"Failed to bid on {job.title[:40]}: {e}", job_id=job.job_id)
 
@@ -356,7 +373,8 @@ class MarketAgent:
                                 continue
                             self.log.action(
                                 f"Bid ACCEPTED! Starting work on: {job.title[:50]}",
-                                job_id=job.job_id, bid_id=bid_id,
+                                job_id=job.job_id,
+                                bid_id=bid_id,
                             )
                             self._active_jobs[job.job_id] = job
                             to_remove.append(bid_id)
@@ -366,7 +384,7 @@ class MarketAgent:
                 if job.status.value not in ("open", "filling"):
                     if job.job_id not in self._active_jobs:
                         self.log.info(
-                            f"Bid on \"{job.title[:40]}\" -- job no longer open ({job.status.value})",
+                            f'Bid on "{job.title[:40]}" -- job no longer open ({job.status.value})',
                             job_id=job.job_id,
                         )
                         to_remove.append(bid_id)
@@ -392,16 +410,21 @@ class MarketAgent:
                         assignment_id = asn.get("assignment_id", "")
 
                         if status == "accepted":
-                            self.log.action(f"Work ACCEPTED on: {updated.title[:50]}", job_id=job_id)
+                            self.log.action(
+                                f"Work ACCEPTED on: {updated.title[:50]}", job_id=job_id
+                            )
                             self._completed.add(job_id)
                             to_remove.append(job_id)
                             self.learner.update_outcome(
-                                job_id, status="accepted",
+                                job_id,
+                                status="accepted",
                                 earned_near=updated.budget_near,
-                                completed_at=datetime.now(timezone.utc).isoformat(),
+                                completed_at=datetime.now(UTC).isoformat(),
                             )
                         elif status == "submitted":
-                            self.log.info(f"Waiting for review: {updated.title[:50]}", job_id=job_id)
+                            self.log.info(
+                                f"Waiting for review: {updated.title[:50]}", job_id=job_id
+                            )
                         elif status == "in_progress" and asn.get("deliverable"):
                             # Revision requested — queue it
                             if assignment_id and assignment_id not in self._revised_assignments:
@@ -410,7 +433,9 @@ class MarketAgent:
                             self.log.warn(f"Work DISPUTED on: {updated.title[:50]}", job_id=job_id)
                             self.learner.update_outcome(job_id, status="disputed")
                         elif status == "cancelled":
-                            self.log.warn(f"Assignment CANCELLED: {updated.title[:50]}", job_id=job_id)
+                            self.log.warn(
+                                f"Assignment CANCELLED: {updated.title[:50]}", job_id=job_id
+                            )
                             to_remove.append(job_id)
                 elif updated.status.value in ("closed", "expired", "completed"):
                     self.log.warn(
@@ -428,11 +453,10 @@ class MarketAgent:
         """Queue a revision request for processing."""
         self.log.action(
             f"Revision requested for: {job.title[:50]}",
-            job_id=job.job_id, assignment_id=assignment_id,
+            job_id=job.job_id,
+            assignment_id=assignment_id,
         )
-        self._pending_revisions.append(
-            (job, assignment_id, assignment.get("deliverable", ""))
-        )
+        self._pending_revisions.append((job, assignment_id, assignment.get("deliverable", "")))
 
     async def _process_pending_revisions(self):
         """Process any pending revision requests."""
@@ -468,10 +492,14 @@ class MarketAgent:
 
     async def _do_work(self, job: Job, assignment_id: str):
         """Complete a job and submit the deliverable."""
-        self.log.action(f"Working on: {job.title[:50]}", job_id=job.job_id, assignment_id=assignment_id)
+        self.log.action(
+            f"Working on: {job.title[:50]}", job_id=job.job_id, assignment_id=assignment_id
+        )
 
         if self.config.dry_run:
-            self.log.decision(f"[DRY RUN] Would complete and submit work for: {job.title[:50]}", job_id=job.job_id)
+            self.log.decision(
+                f"[DRY RUN] Would complete and submit work for: {job.title[:50]}", job_id=job.job_id
+            )
             return
 
         try:
@@ -489,7 +517,9 @@ class MarketAgent:
         self.log.action(f"Revising: {job.title[:50]}", job_id=job.job_id, feedback=feedback[:200])
 
         if self.config.dry_run:
-            self.log.decision(f"[DRY RUN] Would revise and resubmit for: {job.title[:50]}", job_id=job.job_id)
+            self.log.decision(
+                f"[DRY RUN] Would revise and resubmit for: {job.title[:50]}", job_id=job.job_id
+            )
             return
 
         try:
@@ -530,7 +560,7 @@ class MarketAgent:
             "active_jobs": list(self._active_jobs.keys()),
             "completed": list(self._completed),
             "revised_assignments": list(self._revised_assignments),
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "saved_at": datetime.now(UTC).isoformat(),
         }
         self._state_file.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._state_file.with_suffix(".tmp")
@@ -543,9 +573,7 @@ class MarketAgent:
         try:
             state = json.loads(self._state_file.read_text(encoding="utf-8"))
             # Restore seen_jobs as OrderedDict (preserves insertion order)
-            self._seen_jobs = OrderedDict(
-                (jid, True) for jid in state.get("seen_jobs", [])
-            )
+            self._seen_jobs = OrderedDict((jid, True) for jid in state.get("seen_jobs", []))
             self._bid_jobs = set(state.get("bid_jobs", []))
             self._completed = set(state.get("completed", []))
             self._revised_assignments = set(state.get("revised_assignments", []))

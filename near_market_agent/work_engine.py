@@ -33,14 +33,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .alignment import AlignmentMonitor, AlignmentReport
-from .config import Config
-from .deployer import verify_build, DeployResult
-from .github_publisher import publish_workspace, gh_available
-from .models import Job
 from .claude_cli import ClaudeCLI
-from .job_router import classify, JobTier, RoutingResult
+from .config import Config
+from .deployer import DeployResult, verify_build
+from .github_publisher import publish_workspace
+from .job_router import JobTier, RoutingResult, classify
 from .json_utils import extract_json
-from .researcher import Researcher, ResearchBrief
+from .models import Job
+from .researcher import ResearchBrief, Researcher
 from .sanitize import sanitize_text
 
 log = logging.getLogger(__name__)
@@ -52,16 +52,35 @@ KNOWLEDGE_DIR = _PKG_ROOT / "knowledge"
 
 # Dotfiles that should be included in deliverables
 _ALLOWED_DOTFILES = {
-    ".gitignore", ".env.example", ".eslintrc", ".eslintrc.js", ".eslintrc.json",
-    ".prettierrc", ".prettierrc.json", ".npmrc", ".nvmrc", ".editorconfig",
-    ".dockerignore", ".flake8", ".isort.cfg", ".pre-commit-config.yaml",
+    ".gitignore",
+    ".env.example",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.json",
+    ".prettierrc",
+    ".prettierrc.json",
+    ".npmrc",
+    ".nvmrc",
+    ".editorconfig",
+    ".dockerignore",
+    ".flake8",
+    ".isort.cfg",
+    ".pre-commit-config.yaml",
     ".github",
 }
 
 # Directories to skip during file collection
 _SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", "dist", "build",
-    ".venv", "venv", ".tox", "coverage", ".mypy_cache",
+    "node_modules",
+    ".git",
+    "__pycache__",
+    "dist",
+    "build",
+    ".venv",
+    "venv",
+    ".tox",
+    "coverage",
+    ".mypy_cache",
 }
 
 
@@ -134,12 +153,17 @@ def cleanup_stale_workspaces(max_age_hours: int = 24) -> int:
     Returns count of directories removed.
     """
     import time
+
     cleaned = 0
     tmp_dir = tempfile.gettempdir()
     cutoff = time.time() - (max_age_hours * 3600)
 
-    for pattern in ["near_work_text_*", "near_work_package_*",
-                    "near_work_service_*", "near_work_system_*"]:
+    for pattern in [
+        "near_work_text_*",
+        "near_work_package_*",
+        "near_work_service_*",
+        "near_work_system_*",
+    ]:
         for path in glob.glob(os.path.join(tmp_dir, pattern)):
             try:
                 mtime = os.path.getmtime(path)
@@ -158,6 +182,7 @@ def cleanup_stale_workspaces(max_age_hours: int = 24) -> int:
 @dataclass
 class ExecutionResult:
     """Result from running tests/build validation in the workspace."""
+
     passed: bool
     framework: str  # "npm", "pytest", "cargo", "none"
     output: str
@@ -282,7 +307,9 @@ class WorkEngine:
     # --- Workspace setup ---
 
     def _setup_workspace(
-        self, job: Job, routing: RoutingResult,
+        self,
+        job: Job,
+        routing: RoutingResult,
         research: ResearchBrief | None = None,
     ) -> str:
         """Create a temp workspace with job description, template, knowledge, and research."""
@@ -308,7 +335,9 @@ class WorkEngine:
                 for src in research.sources[:20]:
                     research_md += f"- {src}\n"
             Path(workspace, "RESEARCH.md").write_text(research_md)
-            log.info(f"Research brief written: {len(research.content)} chars, {len(research.sources)} sources")
+            log.info(
+                f"Research brief written: {len(research.content)} chars, {len(research.sources)} sources"
+            )
 
         # Copy template if applicable
         if routing.template:
@@ -373,9 +402,18 @@ class WorkEngine:
         parts.append("\n")
 
         # Include key files inline
-        key_files = ["README.md", "package.json", "pyproject.toml", "src/index.ts",
-                     "src/__init__.py", "Dockerfile", "manifest.json",
-                     ".eslintrc.json", ".prettierrc", ".github/workflows/ci.yml"]
+        key_files = [
+            "README.md",
+            "package.json",
+            "pyproject.toml",
+            "src/index.ts",
+            "src/__init__.py",
+            "Dockerfile",
+            "manifest.json",
+            ".eslintrc.json",
+            ".prettierrc",
+            ".github/workflows/ci.yml",
+        ]
         for kf in key_files:
             fp = os.path.join(workspace, kf)
             if os.path.exists(fp):
@@ -413,10 +451,10 @@ class WorkEngine:
     def _run_builder(self, job: Job, routing: RoutingResult, workspace: str) -> str:
         """Run the appropriate builder agent in the workspace with retry logic."""
         prompt = (
-            f"Read JOB.md for the job description. "
-            f"Read REQUIREMENTS.md for the specific requirements checklist — "
-            f"you MUST address every item marked as 'must'. "
-            f"You have NEAR-REFERENCE.md for protocol knowledge. "
+            "Read JOB.md for the job description. "
+            "Read REQUIREMENTS.md for the specific requirements checklist — "
+            "you MUST address every item marked as 'must'. "
+            "You have NEAR-REFERENCE.md for protocol knowledge. "
         )
         # Reference research brief if it exists
         research_path = os.path.join(workspace, "RESEARCH.md")
@@ -488,7 +526,9 @@ class WorkEngine:
             f"Description:\n{safe_desc}\n\n"
             f"Produce the complete deliverable now."
         )
-        content = self.claude.create_message(system=system, user=user, max_tokens=self.config.max_tokens)
+        content = self.claude.create_message(
+            system=system, user=user, max_tokens=self.config.max_tokens
+        )
 
         Path(workspace, "DELIVERABLE.md").write_text(content)
         log.info(f"Fallback generated {len(content)} chars")
@@ -541,29 +581,38 @@ class WorkEngine:
         if os.path.exists(pkg_json):
             if not self._check_tool("node"):
                 log.warning("node not installed — skipping npm tests")
-                return ExecutionResult(passed=True, framework="none",
-                                       output="node not installed — skipped tests")
+                return ExecutionResult(
+                    passed=True, framework="none", output="node not installed — skipped tests"
+                )
             return self._run_npm_tests(workspace)
         elif os.path.exists(pyproject) or os.path.exists(requirements_txt):
             if not self._check_tool("python3") and not self._check_tool("python"):
                 log.warning("python not installed — skipping pytest")
-                return ExecutionResult(passed=True, framework="none",
-                                       output="python not installed — skipped tests")
+                return ExecutionResult(
+                    passed=True, framework="none", output="python not installed — skipped tests"
+                )
             return self._run_python_tests(workspace)
         elif os.path.exists(cargo):
             if not self._check_tool("cargo"):
                 log.warning("cargo not installed — skipping cargo tests")
-                return ExecutionResult(passed=True, framework="none",
-                                       output="cargo not installed — skipped tests")
+                return ExecutionResult(
+                    passed=True, framework="none", output="cargo not installed — skipped tests"
+                )
             return self._run_cargo_tests(workspace)
         else:
             log.info("No test framework detected in workspace")
-            return ExecutionResult(passed=True, framework="none", output="No test framework detected")
+            return ExecutionResult(
+                passed=True, framework="none", output="No test framework detected"
+            )
 
     def _exec_cmd(self, cmd: str, cwd: str) -> subprocess.CompletedProcess:
         """Run a shell command with timeout, capturing output."""
         return subprocess.run(
-            cmd, shell=True, cwd=cwd, capture_output=True, text=True,
+            cmd,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
             timeout=self.EXEC_TIMEOUT,
         )
 
@@ -585,8 +634,11 @@ class WorkEngine:
             test_count, fail_count = self._parse_test_counts(output)
 
             return ExecutionResult(
-                passed=passed, framework="npm", output=output[-2000:],
-                test_count=test_count, fail_count=fail_count,
+                passed=passed,
+                framework="npm",
+                output=output[-2000:],
+                test_count=test_count,
+                fail_count=fail_count,
             )
         except subprocess.TimeoutExpired:
             return ExecutionResult(passed=False, framework="npm", output="Test execution timed out")
@@ -613,11 +665,16 @@ class WorkEngine:
             test_count, fail_count = self._parse_test_counts(output)
 
             return ExecutionResult(
-                passed=passed, framework="pytest", output=output[-2000:],
-                test_count=test_count, fail_count=fail_count,
+                passed=passed,
+                framework="pytest",
+                output=output[-2000:],
+                test_count=test_count,
+                fail_count=fail_count,
             )
         except subprocess.TimeoutExpired:
-            return ExecutionResult(passed=False, framework="pytest", output="Test execution timed out")
+            return ExecutionResult(
+                passed=False, framework="pytest", output="Test execution timed out"
+            )
 
     def _run_cargo_tests(self, workspace: str) -> ExecutionResult:
         """Run cargo test."""
@@ -630,11 +687,16 @@ class WorkEngine:
             test_count, fail_count = self._parse_test_counts(output)
 
             return ExecutionResult(
-                passed=passed, framework="cargo", output=output[-2000:],
-                test_count=test_count, fail_count=fail_count,
+                passed=passed,
+                framework="cargo",
+                output=output[-2000:],
+                test_count=test_count,
+                fail_count=fail_count,
             )
         except subprocess.TimeoutExpired:
-            return ExecutionResult(passed=False, framework="cargo", output="Test execution timed out")
+            return ExecutionResult(
+                passed=False, framework="cargo", output="Test execution timed out"
+            )
 
     @staticmethod
     def _parse_test_counts(output: str) -> tuple[int, int]:
@@ -660,7 +722,10 @@ class WorkEngine:
         return 0, 0
 
     def _fix_test_failures(
-        self, job: Job, routing: RoutingResult, workspace: str,
+        self,
+        job: Job,
+        routing: RoutingResult,
+        workspace: str,
         exec_result: ExecutionResult,
     ) -> ExecutionResult:
         """If tests failed, feed output to builder and re-run tests once."""
@@ -712,7 +777,10 @@ class WorkEngine:
         return False
 
     def _publish_if_needed(
-        self, job: Job, routing: RoutingResult, workspace: str,
+        self,
+        job: Job,
+        routing: RoutingResult,
+        workspace: str,
     ) -> list[str]:
         """Create publishable artifacts if the job requires it.
 
@@ -786,7 +854,9 @@ class WorkEngine:
             if issues:
                 feedback = "; ".join(str(i) for i in issues)
 
-        result = ReviewResult(stage=stage, score=score, passed=passed, feedback=feedback, raw=parsed)
+        result = ReviewResult(
+            stage=stage, score=score, passed=passed, feedback=feedback, raw=parsed
+        )
         log.info(f"Review {stage}: score={score:.2f} passed={passed}")
         return result
 
@@ -800,11 +870,14 @@ class WorkEngine:
         )
         log.info(f"Revising deliverable based on feedback: {feedback[:100]}...")
         return self.claude.create_message(
-            system=REVISE_SYSTEM, user=prompt, max_tokens=self.config.max_tokens,
+            system=REVISE_SYSTEM,
+            user=prompt,
+            max_tokens=self.config.max_tokens,
         )
 
-    def _revise_agentic(self, job: Job, routing: RoutingResult,
-                        workspace: str, feedback: str) -> str:
+    def _revise_agentic(
+        self, job: Job, routing: RoutingResult, workspace: str, feedback: str
+    ) -> str:
         """Revise using agentic mode — re-runs builder agent with feedback context."""
         safe_feedback = sanitize_text(feedback, max_length=4000)
         prompt = (
@@ -835,8 +908,12 @@ class WorkEngine:
         return content
 
     def _run_stage(
-        self, stage_name: str, system_prompt: str, job: Job,
-        deliverable: str, reviews: list[ReviewResult],
+        self,
+        stage_name: str,
+        system_prompt: str,
+        job: Job,
+        deliverable: str,
+        reviews: list[ReviewResult],
     ) -> tuple[str, bool]:
         for attempt in range(1 + self.MAX_REVISIONS_PER_STAGE):
             review = self._run_review(stage_name, system_prompt, job, deliverable)
@@ -848,7 +925,10 @@ class WorkEngine:
         return deliverable, False
 
     def _run_review_pipeline(
-        self, job: Job, content: str, tier: str,
+        self,
+        job: Job,
+        content: str,
+        tier: str,
         workspace_files: list[str] | None = None,
     ) -> WorkResult:
         """Run 3-stage review pipeline and return a WorkResult."""
@@ -881,12 +961,18 @@ class WorkEngine:
     # --- Alignment gap fix ---
 
     def _fix_alignment_gaps(
-        self, job: Job, content: str, report: AlignmentReport,
-        workspace: str, routing: RoutingResult,
+        self,
+        job: Job,
+        content: str,
+        report: AlignmentReport,
+        workspace: str,
+        routing: RoutingResult,
     ) -> str:
         """Targeted fix for critical alignment gaps found at a checkpoint."""
         gaps_text = "\n".join(f"- {gap}" for gap in report.critical_gaps)
-        suggestions_text = "\n".join(f"- {s}" for s in report.suggestions) if report.suggestions else ""
+        suggestions_text = (
+            "\n".join(f"- {s}" for s in report.suggestions) if report.suggestions else ""
+        )
 
         failed_reqs = []
         for check in report.checks:
@@ -931,15 +1017,16 @@ class WorkEngine:
         lightweight = self._is_lightweight(job)
         cost_label = "lightweight" if lightweight else "full"
         log.info(
-            f"Starting job: {job.title[:60]} "
-            f"(budget={job.budget_near} NEAR, pipeline={cost_label})"
+            f"Starting job: {job.title[:60]} (budget={job.budget_near} NEAR, pipeline={cost_label})"
         )
         alignment_reports: list[AlignmentReport] = []
         exec_result: ExecutionResult | None = None
 
         # Step 1: Route
         routing = classify(job)
-        log.info(f"Routed to tier={routing.tier.value} agent={routing.agent} reason={routing.reason}")
+        log.info(
+            f"Routed to tier={routing.tier.value} agent={routing.agent} reason={routing.reason}"
+        )
 
         if self.config.tiers.is_disabled(routing.tier.value):
             raise RuntimeError(f"Tier {routing.tier.value} is disabled via config")
@@ -1031,7 +1118,11 @@ class WorkEngine:
                     f"running targeted fix"
                 )
                 content = self._fix_alignment_gaps(
-                    job, content, build_report, workspace, routing,
+                    job,
+                    content,
+                    build_report,
+                    workspace,
+                    routing,
                 )
 
                 # Code-simplify again after gap fix (full pipeline only)
@@ -1067,7 +1158,7 @@ class WorkEngine:
 
             # Include build verification in grounded alignment context
             if not deploy.success:
-                log.warning(f"Build verification failed — feeding to builder for fix")
+                log.warning("Build verification failed — feeding to builder for fix")
                 fix_prompt = (
                     f"The project FAILS to build. Fix it.\n\n"
                     f"Build output:\n```\n{deploy.output[-2000:]}\n```\n\n"
@@ -1077,8 +1168,10 @@ class WorkEngine:
                 tier_model_fix = self.config.tiers.model_for(routing.tier.value, self.config.model)
                 try:
                     self.claude.run_agent(
-                        agent=routing.agent, prompt=fix_prompt,
-                        workdir=workspace, timeout=tier_timeout_fix,
+                        agent=routing.agent,
+                        prompt=fix_prompt,
+                        workdir=workspace,
+                        timeout=tier_timeout_fix,
                         model=tier_model_fix,
                     )
                     deploy = verify_build(workspace, routing)
@@ -1088,7 +1181,9 @@ class WorkEngine:
 
             # Step 6: Review pipeline
             result = self._run_review_pipeline(
-                job, content, routing.tier.value,
+                job,
+                content,
+                routing.tier.value,
                 workspace_files=files if routing.tier != JobTier.TEXT else [],
             )
             result.alignment_reports = alignment_reports
@@ -1105,7 +1200,9 @@ class WorkEngine:
             # Step 8: Push code to GitHub for code deliverables
             if routing.tier in (JobTier.PACKAGE, JobTier.SERVICE, JobTier.SYSTEM):
                 repo_url = publish_workspace(
-                    workspace, job.title, job.job_id,
+                    workspace,
+                    job.title,
+                    job.job_id,
                     org=self.config.github_org,
                     author_name=self.config.github_author_name,
                     author_email=self.config.github_author_email,
@@ -1136,7 +1233,9 @@ class WorkEngine:
 
         if routing.tier != JobTier.TEXT:
             # Research again for revisions — feedback may reference new requirements
-            research = self.researcher.research_job(job.title, f"{job.description}\n\nRevision feedback: {feedback}")
+            research = self.researcher.research_job(
+                job.title, f"{job.description}\n\nRevision feedback: {feedback}"
+            )
             workspace = self._setup_workspace(job, routing, research=research)
             try:
                 Path(workspace, "PREVIOUS_DELIVERABLE.md").write_text(original)

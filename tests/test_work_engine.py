@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
-from near_market_agent.config import Config
-from near_market_agent.models import Job
 from near_market_agent.alignment import AlignmentReport, Requirement, RequirementCheck
-from near_market_agent.work_engine import WorkEngine, WorkResult, ExecutionResult
-from near_market_agent.researcher import ResearchBrief
+from near_market_agent.config import Config
 from near_market_agent.json_utils import extract_json as _extract_json
+from near_market_agent.models import Job
+from near_market_agent.researcher import ResearchBrief
+from near_market_agent.work_engine import ExecutionResult, WorkEngine, WorkResult
 
 _NO_TESTS = ExecutionResult(passed=True, framework="none", output="No tests")
 
@@ -24,9 +24,10 @@ def _mock_alignment(engine):
     ]
     engine.alignment._requirements = [Requirement(id="R1", description="test", priority="must")]
     engine.alignment.check_alignment = lambda cp, content, context="": AlignmentReport(
-        checkpoint=cp, requirements=[], checks=[
-            RequirementCheck(id="R1", status="pass", evidence="ok")
-        ], overall_score=0.9,
+        checkpoint=cp,
+        requirements=[],
+        checks=[RequirementCheck(id="R1", status="pass", evidence="ok")],
+        overall_score=0.9,
     )
 
 
@@ -43,10 +44,13 @@ def _job(**overrides):
 
 
 PASSING_REVIEW = json.dumps({"score": 0.9, "pass": True, "feedback": ""})
-FAILING_REVIEW = json.dumps({
-    "score": 0.4, "pass": False,
-    "feedback": "Missing examples section",
-})
+FAILING_REVIEW = json.dumps(
+    {
+        "score": 0.4,
+        "pass": False,
+        "feedback": "Missing examples section",
+    }
+)
 
 
 class WorkEngineTests(unittest.TestCase):
@@ -87,11 +91,11 @@ class WorkEngineTests(unittest.TestCase):
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
-                FAILING_REVIEW,                     # review 1 fails
-                "# Revised\nBetter content.",       # revision
-                PASSING_REVIEW,                     # review 1 passes
-                PASSING_REVIEW,                     # review 2 passes
-                PASSING_REVIEW,                     # review 3 passes
+                FAILING_REVIEW,  # review 1 fails
+                "# Revised\nBetter content.",  # revision
+                PASSING_REVIEW,  # review 1 passes
+                PASSING_REVIEW,  # review 2 passes
+                PASSING_REVIEW,  # review 3 passes
             ]
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
@@ -124,10 +128,12 @@ class WorkEngineTests(unittest.TestCase):
             engine._simplify = lambda job, ws, routing: None
             engine._validate_execution = lambda ws, routing: _NO_TESTS
             engine._publish_if_needed = lambda job, routing, ws: []
-            result = engine.complete_job(_job(
-                title="Build NEAR Account Monitor",
-                tags=["npm", "near"],
-            ))
+            result = engine.complete_job(
+                _job(
+                    title="Build NEAR Account Monitor",
+                    tags=["npm", "near"],
+                )
+            )
 
         self.assertEqual(result.tier, "package")
 
@@ -145,7 +151,9 @@ class WorkEngineTests(unittest.TestCase):
             engine._publish_if_needed = lambda job, routing, ws: []
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
-                PASSING_REVIEW, PASSING_REVIEW, PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
             ]
             result = engine.complete_job(_job())
             # Even with empty builder, collector finds JOB.md etc.
@@ -160,14 +168,12 @@ class WorkEngineTests(unittest.TestCase):
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
                 "# Revised Guide\nNow with more detail.",  # revision
-                PASSING_REVIEW,                              # review 1
-                PASSING_REVIEW,                              # review 2
-                PASSING_REVIEW,                              # review 3
+                PASSING_REVIEW,  # review 1
+                PASSING_REVIEW,  # review 2
+                PASSING_REVIEW,  # review 3
             ]
             engine = WorkEngine(cfg)
-            result = engine.handle_revision(
-                _job(), "Original content", "Need more examples"
-            )
+            result = engine.handle_revision(_job(), "Original content", "Need more examples")
 
         self.assertIn("Revised Guide", result.content)
         self.assertEqual(len(result.reviews), 3)
@@ -182,8 +188,11 @@ class WorkEngineTests(unittest.TestCase):
 
     def test_work_result_has_tier_and_files(self) -> None:
         r = WorkResult(
-            job_id="j1", content="x", content_hash="sha256:abc",
-            tier="package", workspace_files=["src/index.ts", "package.json"],
+            job_id="j1",
+            content="x",
+            content_hash="sha256:abc",
+            tier="package",
+            workspace_files=["src/index.ts", "package.json"],
         )
         self.assertEqual(r.tier, "package")
         self.assertEqual(len(r.workspace_files), 2)
@@ -218,8 +227,15 @@ class ExecutionValidationTests(unittest.TestCase):
         cfg = Config(market_api_key="m")
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
-            from near_market_agent.job_router import RoutingResult, JobTier
-            routing = RoutingResult(tier=JobTier.TEXT, agent="text-writer", template=None, language="markdown", reason="text")
+            from near_market_agent.job_router import JobTier, RoutingResult
+
+            routing = RoutingResult(
+                tier=JobTier.TEXT,
+                agent="text-writer",
+                template=None,
+                language="markdown",
+                reason="text",
+            )
             result = engine._validate_execution("/tmp/fake", routing)
         self.assertTrue(result.passed)
         self.assertEqual(result.framework, "none")
@@ -230,18 +246,31 @@ class ExecutionValidationTests(unittest.TestCase):
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
             import tempfile
+
             ws = tempfile.mkdtemp()
             try:
                 # Create package.json with a passing test
                 import json as _json
-                _json.dump({"name": "test", "scripts": {"test": "echo '5 passed'"}}, open(os.path.join(ws, "package.json"), "w"))
-                from near_market_agent.job_router import RoutingResult, JobTier
-                routing = RoutingResult(tier=JobTier.PACKAGE, agent="package-builder", template=None, language="typescript", reason="npm")
+
+                _json.dump(
+                    {"name": "test", "scripts": {"test": "echo '5 passed'"}},
+                    open(os.path.join(ws, "package.json"), "w"),
+                )
+                from near_market_agent.job_router import JobTier, RoutingResult
+
+                routing = RoutingResult(
+                    tier=JobTier.PACKAGE,
+                    agent="package-builder",
+                    template=None,
+                    language="typescript",
+                    reason="npm",
+                )
                 result = engine._validate_execution(ws, routing)
                 self.assertTrue(result.passed)
                 self.assertEqual(result.framework, "npm")
             finally:
                 import shutil
+
                 shutil.rmtree(ws, ignore_errors=True)
 
     def test_parse_pytest_output(self) -> None:
@@ -273,7 +302,9 @@ class ExecutionValidationTests(unittest.TestCase):
         self.assertIn("PASSED", r.summary())
         self.assertIn("npm", r.summary())
 
-        r2 = ExecutionResult(passed=False, framework="pytest", output="fail", test_count=3, fail_count=1)
+        r2 = ExecutionResult(
+            passed=False, framework="pytest", output="fail", test_count=3, fail_count=1
+        )
         self.assertIn("FAILED", r2.summary())
 
 
@@ -284,8 +315,15 @@ class PublishTests(unittest.TestCase):
         cfg = Config(market_api_key="m")
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
-            from near_market_agent.job_router import RoutingResult, JobTier
-            routing = RoutingResult(tier=JobTier.PACKAGE, agent="package-builder", template=None, language="typescript", reason="npm")
+            from near_market_agent.job_router import JobTier, RoutingResult
+
+            routing = RoutingResult(
+                tier=JobTier.PACKAGE,
+                agent="package-builder",
+                template=None,
+                language="typescript",
+                reason="npm",
+            )
             job = _job(tags=["npm", "publish"])
             self.assertTrue(engine._needs_publish(job, routing))
 
@@ -293,8 +331,15 @@ class PublishTests(unittest.TestCase):
         cfg = Config(market_api_key="m")
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
-            from near_market_agent.job_router import RoutingResult, JobTier
-            routing = RoutingResult(tier=JobTier.PACKAGE, agent="package-builder", template=None, language="typescript", reason="npm")
+            from near_market_agent.job_router import JobTier, RoutingResult
+
+            routing = RoutingResult(
+                tier=JobTier.PACKAGE,
+                agent="package-builder",
+                template=None,
+                language="typescript",
+                reason="npm",
+            )
             job = _job(description="Please publish to npm registry")
             self.assertTrue(engine._needs_publish(job, routing))
 
@@ -302,8 +347,15 @@ class PublishTests(unittest.TestCase):
         cfg = Config(market_api_key="m")
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
-            from near_market_agent.job_router import RoutingResult, JobTier
-            routing = RoutingResult(tier=JobTier.TEXT, agent="text-writer", template=None, language="markdown", reason="text")
+            from near_market_agent.job_router import JobTier, RoutingResult
+
+            routing = RoutingResult(
+                tier=JobTier.TEXT,
+                agent="text-writer",
+                template=None,
+                language="markdown",
+                reason="text",
+            )
             job = _job(tags=["npm", "publish"])
             self.assertFalse(engine._needs_publish(job, routing))
 
@@ -311,8 +363,15 @@ class PublishTests(unittest.TestCase):
         cfg = Config(market_api_key="m")
         with patch("near_market_agent.work_engine.ClaudeCLI"):
             engine = WorkEngine(cfg)
-            from near_market_agent.job_router import RoutingResult, JobTier
-            routing = RoutingResult(tier=JobTier.PACKAGE, agent="package-builder", template=None, language="typescript", reason="npm")
+            from near_market_agent.job_router import JobTier, RoutingResult
+
+            routing = RoutingResult(
+                tier=JobTier.PACKAGE,
+                agent="package-builder",
+                template=None,
+                language="typescript",
+                reason="npm",
+            )
             job = _job(tags=["near"], description="Build a tool")
             self.assertFalse(engine._needs_publish(job, routing))
 
@@ -335,7 +394,9 @@ class CostAwarePipelineTests(unittest.TestCase):
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
-                PASSING_REVIEW, PASSING_REVIEW, PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
             ]
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
@@ -353,7 +414,9 @@ class CostAwarePipelineTests(unittest.TestCase):
         with patch("near_market_agent.work_engine.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
             mock_claude.create_message.side_effect = [
-                PASSING_REVIEW, PASSING_REVIEW, PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
+                PASSING_REVIEW,
             ]
             engine = WorkEngine(cfg)
             engine.researcher.research_job = lambda t, d: ResearchBrief(content="", sources=[])
@@ -368,8 +431,12 @@ class CostAwarePipelineTests(unittest.TestCase):
     def test_work_result_to_dict_includes_new_fields(self) -> None:
         """WorkResult.to_dict() includes execution, cost_tier, publish_artifacts."""
         r = WorkResult(
-            job_id="j1", content="x", content_hash="sha256:abc",
-            execution_result=ExecutionResult(passed=True, framework="npm", output="ok", test_count=5, fail_count=0),
+            job_id="j1",
+            content="x",
+            content_hash="sha256:abc",
+            execution_result=ExecutionResult(
+                passed=True, framework="npm", output="ok", test_count=5, fail_count=0
+            ),
             publish_artifacts=["my-pkg-1.0.0.tgz"],
             cost_tier="full",
         )

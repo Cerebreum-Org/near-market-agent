@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,7 +17,7 @@ def _safe_float(value: str | None) -> float:
         return 0.0
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     OPEN = "open"
     FILLING = "filling"
     IN_PROGRESS = "in_progress"
@@ -27,19 +27,19 @@ class JobStatus(str, Enum):
     JUDGING = "judging"
 
 
-class JobType(str, Enum):
+class JobType(StrEnum):
     STANDARD = "standard"
     COMPETITION = "competition"
 
 
-class BidStatus(str, Enum):
+class BidStatus(StrEnum):
     PENDING = "pending"
     ACCEPTED = "accepted"
     REJECTED = "rejected"
     WITHDRAWN = "withdrawn"
 
 
-class AssignmentStatus(str, Enum):
+class AssignmentStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     SUBMITTED = "submitted"
     ACCEPTED = "accepted"
@@ -94,8 +94,10 @@ class Job(BaseModel):
     @property
     def is_expired(self) -> bool:
         if self.expires_at:
-            expires = self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=timezone.utc)
-            return datetime.now(timezone.utc) > expires
+            expires = (
+                self.expires_at if self.expires_at.tzinfo else self.expires_at.replace(tzinfo=UTC)
+            )
+            return datetime.now(UTC) > expires
         return False
 
 
@@ -141,8 +143,11 @@ class WalletBalance(BaseModel):
 
 class JobEvaluation(BaseModel):
     """LLM evaluation of a job opportunity."""
+
     job_id: str
-    score: float = Field(ge=0, le=1, description="0-1 score of how well this matches our capabilities")
+    score: float = Field(
+        ge=0, le=1, description="0-1 score of how well this matches our capabilities"
+    )
     should_bid: bool = False
     reasoning: str = ""
     suggested_bid_amount: float | None = None

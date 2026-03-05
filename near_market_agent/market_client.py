@@ -10,16 +10,21 @@ Features:
 from __future__ import annotations
 
 import asyncio
-import httpx
 import json
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
+
+import httpx
 
 from .config import Config
 from .models import (
-    AgentProfile, Job, Bid, Message, WalletBalance,
+    AgentProfile,
+    Bid,
+    Job,
+    Message,
+    WalletBalance,
 )
 
 # Retry config
@@ -35,6 +40,7 @@ MAX_KEEPALIVE_CONNECTIONS = 10
 @dataclass
 class RateLimitState:
     """Tracks rate limit state from API responses."""
+
     remaining: int | None = None
     limit: int | None = None
     reset_at: float | None = None  # unix timestamp
@@ -46,6 +52,7 @@ class RateLimitState:
 @dataclass
 class RequestMetrics:
     """Tracks API request metrics."""
+
     total_requests: int = 0
     successful: int = 0
     retried: int = 0
@@ -60,6 +67,7 @@ class RequestMetrics:
 
 class MarketAPIError(Exception):
     """API error with status code and detail."""
+
     def __init__(self, status: int, detail: str, url: str = ""):
         self.status = status
         self.detail = detail
@@ -177,7 +185,11 @@ class MarketClient:
                     self.metrics.retried += 1
                     await asyncio.sleep(wait + jitter)
                     continue
-                if resp.status_code in RETRYABLE_STATUS and resp.status_code != 429 and attempt < MAX_RETRIES - 1:
+                if (
+                    resp.status_code in RETRYABLE_STATUS
+                    and resp.status_code != 429
+                    and attempt < MAX_RETRIES - 1
+                ):
                     jitter = random.uniform(0, RETRY_BACKOFF[attempt] * 0.3)
                     self.metrics.retried += 1
                     await asyncio.sleep(RETRY_BACKOFF[attempt] + jitter)
@@ -262,8 +274,11 @@ class MarketClient:
         offset: int = 0,
     ) -> list[Job]:
         params: dict[str, Any] = {
-            "status": status, "sort": sort, "order": order,
-            "limit": limit, "offset": offset,
+            "status": status,
+            "sort": sort,
+            "order": order,
+            "limit": limit,
+            "offset": offset,
         }
         if tags:
             params["tags"] = tags
@@ -325,12 +340,18 @@ class MarketClient:
         return await self._post(path, json=body)
 
     async def submit_deliverable(
-        self, job_id: str, deliverable: str, deliverable_hash: str | None = None,
+        self,
+        job_id: str,
+        deliverable: str,
+        deliverable_hash: str | None = None,
     ) -> dict:
         return await self._submit_work(f"/jobs/{job_id}/submit", deliverable, deliverable_hash)
 
     async def submit_competition_entry(
-        self, job_id: str, deliverable: str, deliverable_hash: str | None = None,
+        self,
+        job_id: str,
+        deliverable: str,
+        deliverable_hash: str | None = None,
     ) -> dict:
         return await self._submit_work(f"/jobs/{job_id}/entries", deliverable, deliverable_hash)
 

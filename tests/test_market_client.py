@@ -34,7 +34,9 @@ class MarketClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.client._client.request = AsyncMock(side_effect=[first, second])
 
-        with patch("near_market_agent.market_client.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+        with patch(
+            "near_market_agent.market_client.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep_mock:
             result = await self.client._request("GET", "/jobs")
 
         self.assertEqual(result, {"ok": True})
@@ -59,7 +61,9 @@ class MarketClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_request_retries_on_connect_error_then_fails(self) -> None:
         self.client._client.request = AsyncMock(side_effect=httpx.ConnectError("boom"))
 
-        with patch("near_market_agent.market_client.asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+        with patch(
+            "near_market_agent.market_client.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep_mock:
             with self.assertRaises(MarketAPIError) as ctx:
                 await self.client._request("GET", "/jobs")
 
@@ -68,22 +72,32 @@ class MarketClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sleep_mock.await_count, 2)
 
     async def test_list_jobs_parses_list_and_wrapped_payloads(self) -> None:
-        self.client._get = AsyncMock(return_value=[{
-            "job_id": "j1",
-            "creator_agent_id": "a1",
-            "title": "T1",
-            "description": "D1",
-        }])
+        self.client._get = AsyncMock(
+            return_value=[
+                {
+                    "job_id": "j1",
+                    "creator_agent_id": "a1",
+                    "title": "T1",
+                    "description": "D1",
+                }
+            ]
+        )
         jobs = await self.client.list_jobs()
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].job_id, "j1")
 
-        self.client._get = AsyncMock(return_value={"jobs": [{
-            "job_id": "j2",
-            "creator_agent_id": "a2",
-            "title": "T2",
-            "description": "D2",
-        }]})
+        self.client._get = AsyncMock(
+            return_value={
+                "jobs": [
+                    {
+                        "job_id": "j2",
+                        "creator_agent_id": "a2",
+                        "title": "T2",
+                        "description": "D2",
+                    }
+                ]
+            }
+        )
         jobs = await self.client.list_jobs()
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0].job_id, "j2")

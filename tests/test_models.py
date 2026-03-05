@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
 
@@ -39,9 +39,9 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(missing.budget_near, 0.0)
 
     def test_job_is_expired_handles_naive_and_aware_datetimes(self) -> None:
-        past_aware = datetime.now(timezone.utc) - timedelta(minutes=1)
+        past_aware = datetime.now(UTC) - timedelta(minutes=1)
         # Code treats naive datetimes as UTC. Build a naive UTC timestamp.
-        future_naive = (datetime.now(timezone.utc) + timedelta(minutes=1)).replace(tzinfo=None)
+        future_naive = (datetime.now(UTC) + timedelta(minutes=1)).replace(tzinfo=None)
 
         expired = Job(
             job_id="ja",

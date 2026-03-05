@@ -1,4 +1,5 @@
 """Autonomous agent for market.near.ai"""
+
 __version__ = "0.1.0"
 
 __all__ = ["extract_llm_text", "__version__"]

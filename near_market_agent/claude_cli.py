@@ -56,8 +56,10 @@ class ClaudeCLI:
         cmd = [
             "claude",
             "-p",
-            "--model", effective_model,
-            "--output-format", "text",
+            "--model",
+            effective_model,
+            "--output-format",
+            "text",
         ]
 
         if agent:
@@ -120,8 +122,15 @@ class ClaudeCLI:
     ) -> str:
         """Async version — runs in a thread."""
         return await asyncio.to_thread(
-            self._run, prompt, system, max_tokens, agent, workdir,
-            allowed_tools, timeout, model,
+            self._run,
+            prompt,
+            system,
+            max_tokens,
+            agent,
+            workdir,
+            allowed_tools,
+            timeout,
+            model,
         )
 
     def create_message(
@@ -228,6 +237,4 @@ class ClaudeCLI:
         messages: list[dict[str, str]],
         max_tokens: int | None = None,
     ) -> str:
-        return await asyncio.to_thread(
-            self.create_conversation, system, messages, max_tokens
-        )
+        return await asyncio.to_thread(self.create_conversation, system, messages, max_tokens)

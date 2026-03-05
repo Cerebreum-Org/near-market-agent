@@ -28,18 +28,40 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
 @dataclass
 class AgentCapabilities:
     """What this agent can do."""
-    skills: list[str] = field(default_factory=lambda: [
-        "research", "analysis", "technical-writing", "blog-posts",
-        "documentation", "tutorials", "code-review", "python",
-        "javascript", "typescript", "rust", "solidity",
-        "data-analysis", "competitive-intelligence", "seo",
-        "content-creation", "api-integration", "web-scraping",
-    ])
 
-    skip_categories: list[str] = field(default_factory=lambda: [
-        "video-creation", "image-creation", "physical-task",
-        "social-media-account", "voice-recording", "photography",
-    ])
+    skills: list[str] = field(
+        default_factory=lambda: [
+            "research",
+            "analysis",
+            "technical-writing",
+            "blog-posts",
+            "documentation",
+            "tutorials",
+            "code-review",
+            "python",
+            "javascript",
+            "typescript",
+            "rust",
+            "solidity",
+            "data-analysis",
+            "competitive-intelligence",
+            "seo",
+            "content-creation",
+            "api-integration",
+            "web-scraping",
+        ]
+    )
+
+    skip_categories: list[str] = field(
+        default_factory=lambda: [
+            "video-creation",
+            "image-creation",
+            "physical-task",
+            "social-media-account",
+            "voice-recording",
+            "photography",
+        ]
+    )
 
     description: str = (
         "Full-stack autonomous agent powered by Claude. Specializes in research, "
@@ -52,11 +74,12 @@ class AgentCapabilities:
 @dataclass
 class TierConfig:
     """Per-tier configuration for timeouts and model overrides."""
+
     # Timeout in seconds for builder agent runs
-    text_timeout: int = 300        # Text jobs are simpler
-    package_timeout: int = 600     # Package builds need more time
-    service_timeout: int = 900     # Service builds are complex
-    system_timeout: int = 1200     # Multi-agent systems are the most complex
+    text_timeout: int = 300  # Text jobs are simpler
+    package_timeout: int = 600  # Package builds need more time
+    service_timeout: int = 900  # Service builds are complex
+    system_timeout: int = 1200  # Multi-agent systems are the most complex
 
     # Optional per-tier model overrides (empty = use default)
     text_model: str = ""
@@ -94,6 +117,7 @@ class TierConfig:
 @dataclass
 class Config:
     """Agent configuration loaded from environment."""
+
     # API keys
     market_api_key: str = ""
     anthropic_api_key: str = ""  # Deprecated — using Claude CLI instead
@@ -103,9 +127,9 @@ class Config:
     api_version: str = "v1"
 
     # Agent behavior
-    min_budget_near: float = 1.0       # Skip jobs below this
-    max_concurrent_jobs: int = 3       # Max jobs to work on simultaneously
-    poll_interval_seconds: int = 60    # How often to check for updates
+    min_budget_near: float = 1.0  # Skip jobs below this
+    max_concurrent_jobs: int = 3  # Max jobs to work on simultaneously
+    poll_interval_seconds: int = 60  # How often to check for updates
     bid_confidence_threshold: float = 0.6  # Min eval score to bid
 
     # LLM settings
@@ -119,12 +143,12 @@ class Config:
     capabilities: AgentCapabilities = field(default_factory=AgentCapabilities)
 
     # GitHub publishing
-    github_org: str = ""              # GitHub org/user for code delivery repos
+    github_org: str = ""  # GitHub org/user for code delivery repos
     github_author_name: str = "NEAR Market Agent"
     github_author_email: str = "agent@market.near.ai"
 
     # Web search
-    tavily_api_key: str = ""          # Tavily API key for research phase (free at tavily.com)
+    tavily_api_key: str = ""  # Tavily API key for research phase (free at tavily.com)
 
     # Runtime flags
     dry_run: bool = False

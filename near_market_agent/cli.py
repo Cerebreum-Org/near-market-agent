@@ -8,8 +8,8 @@ import sys
 import click
 from rich.console import Console
 
-from .config import Config
 from .agent import MarketAgent
+from .config import Config
 
 console = Console()
 
@@ -28,7 +28,9 @@ def cli(ctx, dry_run: bool, verbose: bool):
 
 
 @cli.command()
-@click.option("--interval", "-i", default=60, type=click.IntRange(min=1), help="Poll interval in seconds")
+@click.option(
+    "--interval", "-i", default=60, type=click.IntRange(min=1), help="Poll interval in seconds"
+)
 @click.pass_context
 def run(ctx, interval: int):
     """Run the autonomous agent loop."""
@@ -86,7 +88,9 @@ def status(ctx):
 @cli.command()
 @click.argument("job_id")
 @click.option("--amount", "-a", required=True, help="Bid amount in NEAR")
-@click.option("--eta", "-e", default=24, type=click.IntRange(min=1), help="Estimated hours to complete")
+@click.option(
+    "--eta", "-e", default=24, type=click.IntRange(min=1), help="Estimated hours to complete"
+)
 @click.option("--proposal", "-p", help="Proposal text (or auto-generate)")
 @click.option("--force", is_flag=True, help="Bypass bid-confidence threshold check")
 @click.pass_context
@@ -168,7 +172,9 @@ def work(ctx, job_id: str):
             console.print(f"[bold]Working on: {job.title}[/]")
 
             result = await agent.engine.complete_job_async(job)
-            console.print(f"\n[dim]Produced {len(result.content)} chars ({result.tokens_used} tokens)[/]")
+            console.print(
+                f"\n[dim]Produced {len(result.content)} chars ({result.tokens_used} tokens)[/]"
+            )
             console.print(f"\n{result.content[:1000]}")
 
             # Save locally first — safety net in case submit fails
@@ -179,7 +185,7 @@ def work(ctx, job_id: str):
             console.print(f"\n[dim]Saved to {deliverable_file}[/]")
 
             if config.dry_run:
-                console.print(f"\n[yellow]DRY RUN — deliverable not submitted[/]")
+                console.print("\n[yellow]DRY RUN — deliverable not submitted[/]")
                 return
 
             await agent.client.submit_deliverable(
@@ -187,7 +193,7 @@ def work(ctx, job_id: str):
                 deliverable=result.content,
                 deliverable_hash=result.content_hash,
             )
-            console.print(f"\n[green]✓ Deliverable submitted![/]")
+            console.print("\n[green]✓ Deliverable submitted![/]")
 
     asyncio.run(_work())
 
@@ -198,6 +204,7 @@ def dashboard(ctx):
     """Show performance dashboard — earnings, win rate, insights."""
     from rich.panel import Panel
     from rich.table import Table
+
     from .learner import Learner
 
     config: Config = ctx.obj["config"]
@@ -205,15 +212,17 @@ def dashboard(ctx):
     stats = learner.compute_stats()
 
     # Stats panel
-    console.print(Panel(
-        f"[bold green]💰 Earned:[/] {stats.total_earned_near:.1f} NEAR\n"
-        f"[bold]📊 Win Rate:[/] {stats.win_rate:.0%} ({stats.bids_accepted}/{stats.total_bids} bids)\n"
-        f"[bold]✅ Acceptance:[/] {stats.acceptance_rate:.0%} ({stats.jobs_accepted}/{stats.jobs_completed} submitted)\n"
-        f"[bold]🔄 Revisions:[/] {stats.total_revisions}\n"
-        f"[bold]🔥 Streak:[/] {stats.streak} accepted",
-        title="[bold cyan]Agent Performance[/]",
-        border_style="cyan",
-    ))
+    console.print(
+        Panel(
+            f"[bold green]💰 Earned:[/] {stats.total_earned_near:.1f} NEAR\n"
+            f"[bold]📊 Win Rate:[/] {stats.win_rate:.0%} ({stats.bids_accepted}/{stats.total_bids} bids)\n"
+            f"[bold]✅ Acceptance:[/] {stats.acceptance_rate:.0%} ({stats.jobs_accepted}/{stats.jobs_completed} submitted)\n"
+            f"[bold]🔄 Revisions:[/] {stats.total_revisions}\n"
+            f"[bold]🔥 Streak:[/] {stats.streak} accepted",
+            title="[bold cyan]Agent Performance[/]",
+            border_style="cyan",
+        )
+    )
 
     # Bids table
     table = Table(title="Bid Status")
@@ -227,7 +236,7 @@ def dashboard(ctx):
 
     # Quality metrics
     if stats.avg_review_score > 0:
-        console.print(f"\n[bold]Quality Metrics:[/]")
+        console.print("\n[bold]Quality Metrics:[/]")
         console.print(f"  Avg Review Score: {stats.avg_review_score:.2f}/1.0")
         console.print(f"  Avg Build Time: {stats.avg_build_time_seconds:.0f}s")
         if stats.best_tier:
@@ -238,14 +247,16 @@ def dashboard(ctx):
     # Learning insights
     insights = learner.analyze_patterns()
     if insights:
-        console.print(f"\n[bold yellow]💡 Learning Insights:[/]")
+        console.print("\n[bold yellow]💡 Learning Insights:[/]")
         for i in insights:
             console.print(f"  [{i.category}] {i.insight}")
             console.print(f"    → [dim]{i.action}[/]")
     elif len(learner._outcomes) < 5:
-        console.print(f"\n[dim]Need more data for insights (have {len(learner._outcomes)}, need 5+)[/]")
+        console.print(
+            f"\n[dim]Need more data for insights (have {len(learner._outcomes)}, need 5+)[/]"
+        )
     else:
-        console.print(f"\n[dim]No actionable insights yet[/]")
+        console.print("\n[dim]No actionable insights yet[/]")
 
 
 @cli.command()
@@ -263,7 +274,9 @@ def insights(ctx):
         return
 
     for i in results:
-        emoji = {"pricing": "💰", "quality": "⭐", "tier": "📊", "timing": "⏱"}.get(i.category, "💡")
+        emoji = {"pricing": "💰", "quality": "⭐", "tier": "📊", "timing": "⏱"}.get(
+            i.category, "💡"
+        )
         console.print(f"\n{emoji} [bold]{i.category.upper()}[/] (confidence: {i.confidence:.0%})")
         console.print(f"  {i.insight}")
         console.print(f"  → [green]{i.action}[/]")

@@ -1,12 +1,11 @@
 """Tests for the self-improvement learner module."""
 
-import json
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from near_market_agent.learner import Learner, JobOutcome, AgentStats, LearningInsight
+from near_market_agent.learner import AgentStats, JobOutcome, Learner
 
 
 def _make_outcome(
@@ -47,7 +46,7 @@ class TestLearner:
     def test_init_creates_dir(self):
         with tempfile.TemporaryDirectory() as d:
             log_dir = Path(d) / "subdir"
-            learner = Learner(log_dir=str(log_dir))
+            Learner(log_dir=str(log_dir))
             assert log_dir.exists()
 
     def test_record_and_load(self):
@@ -133,8 +132,11 @@ class TestComputeStats:
 class TestStatsMarkdown:
     def test_renders(self):
         stats = AgentStats(
-            total_bids=10, bids_accepted=7, total_earned_near=35.0,
-            win_rate=0.7, acceptance_rate=0.85,
+            total_bids=10,
+            bids_accepted=7,
+            total_earned_near=35.0,
+            win_rate=0.7,
+            acceptance_rate=0.85,
         )
         md = stats.to_markdown()
         assert "35.0 NEAR" in md
@@ -158,7 +160,9 @@ class TestAnalyzePatterns:
                 learner.record_outcome(_make_outcome(f"a{i}", status="accepted", bid_amount=3.0))
             # Rejected bids at high prices
             for i in range(3):
-                learner.record_outcome(_make_outcome(f"r{i}", status="bid_rejected", bid_amount=8.0))
+                learner.record_outcome(
+                    _make_outcome(f"r{i}", status="bid_rejected", bid_amount=8.0)
+                )
 
             insights = learner.analyze_patterns()
             pricing = [i for i in insights if i.category == "pricing"]
@@ -177,9 +181,15 @@ class TestPricingSuggestion:
             learner = Learner(log_dir=d)
             # Historically accepted at ~80% of budget
             for i in range(5):
-                learner.record_outcome(_make_outcome(
-                    f"j{i}", status="accepted", bid_amount=4.0, budget_near=5.0, tier="package",
-                ))
+                learner.record_outcome(
+                    _make_outcome(
+                        f"j{i}",
+                        status="accepted",
+                        bid_amount=4.0,
+                        budget_near=5.0,
+                        tier="package",
+                    )
+                )
 
             suggestion = learner.get_pricing_suggestion(10.0, "package")
             assert suggestion is not None

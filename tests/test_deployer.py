@@ -4,25 +4,23 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import subprocess
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from near_market_agent.deployer import (
-    verify_build,
+    _has_script,
+    _tool_available,
+    _verify_docker_build,
     _verify_npm_build,
     _verify_python_build,
-    _verify_docker_build,
-    _tool_available,
-    _has_script,
-    DeployResult,
+    verify_build,
 )
 from near_market_agent.job_router import JobTier, RoutingResult
 
 
 def _make_routing(tier: JobTier) -> RoutingResult:
-    return RoutingResult(tier=tier, agent="test-agent", reason="test", template=None, language="typescript")
+    return RoutingResult(
+        tier=tier, agent="test-agent", reason="test", template=None, language="typescript"
+    )
 
 
 class TestToolAvailable:

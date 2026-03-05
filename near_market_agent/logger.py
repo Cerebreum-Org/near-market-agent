@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-
 
 console = Console(stderr=True)
 
@@ -22,12 +21,12 @@ class AgentLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
         # Include microseconds to avoid collision on rapid restarts
-        self._session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        self._session_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
         self._log_file = self.log_dir / f"agent_{self._session_id}.jsonl"
 
     def _write_log(self, level: str, event: str, **data: object) -> None:
         """Write one structured log entry to the session JSONL file."""
-        entry = {"ts": datetime.now(timezone.utc).isoformat(), "level": level, "event": event}
+        entry = {"ts": datetime.now(UTC).isoformat(), "level": level, "event": event}
         for k, v in data.items():
             try:
                 json.dumps(v)

@@ -10,10 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from .claude_cli import ClaudeCLI
 from .json_utils import extract_json
@@ -74,14 +72,19 @@ def _run_web_search(query: str, count: int = 5) -> list[dict]:
         return []
 
     try:
-        payload = json.dumps({
-            "query": query,
-            "max_results": count,
-            "search_depth": "basic",
-            "include_answer": False,
-        })
+        payload = json.dumps(
+            {
+                "query": query,
+                "max_results": count,
+                "search_depth": "basic",
+                "include_answer": False,
+            }
+        )
         result = subprocess.run(
-            ["node", "-e", f"""
+            [
+                "node",
+                "-e",
+                f"""
 const https = require('https');
 const data = {json.dumps(payload)};
 const options = {{
@@ -112,8 +115,11 @@ const req = https.request(options, (res) => {{
 req.on('error', () => console.log(JSON.stringify([])));
 req.write(data);
 req.end();
-"""],
-            capture_output=True, text=True, timeout=15,
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
@@ -126,7 +132,10 @@ def _fetch_url_text(url: str, max_chars: int = 8000) -> str:
     """Fetch a URL and extract readable text content."""
     try:
         result = subprocess.run(
-            ["node", "-e", f"""
+            [
+                "node",
+                "-e",
+                f"""
 const https = require('https');
 const http = require('http');
 const url = {json.dumps(url)};
@@ -151,8 +160,11 @@ const req = client.get(url, {{headers: {{'User-Agent': 'Mozilla/5.0'}}, timeout:
 }});
 req.on('error', (e) => console.log('ERROR:' + e.message));
 req.setTimeout(10000, () => {{ req.destroy(); console.log('ERROR:timeout'); }});
-"""],
-            capture_output=True, text=True, timeout=15,
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0:
             text = result.stdout.strip()
@@ -168,7 +180,10 @@ def _lookup_npm_package(name: str) -> str:
     url = f"https://registry.npmjs.org/{name}"
     try:
         result = subprocess.run(
-            ["node", "-e", f"""
+            [
+                "node",
+                "-e",
+                f"""
 const https = require('https');
 https.get({json.dumps(url)}, (res) => {{
     let data = '';
@@ -190,8 +205,11 @@ https.get({json.dumps(url)}, (res) => {{
         }} catch(e) {{ console.log(JSON.stringify({{error: 'parse'}})); }}
     }});
 }}).on('error', () => console.log(JSON.stringify({{error: 'network'}})));
-"""],
-            capture_output=True, text=True, timeout=10,
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
@@ -210,7 +228,10 @@ def _lookup_pypi_package(name: str) -> str:
     url = f"https://pypi.org/pypi/{name}/json"
     try:
         result = subprocess.run(
-            ["node", "-e", f"""
+            [
+                "node",
+                "-e",
+                f"""
 const https = require('https');
 https.get({json.dumps(url)}, (res) => {{
     let data = '';
@@ -229,8 +250,11 @@ https.get({json.dumps(url)}, (res) => {{
         }} catch(e) {{ console.log(JSON.stringify({{error: 'parse'}})); }}
     }});
 }}).on('error', () => console.log(JSON.stringify({{error: 'network'}})));
-"""],
-            capture_output=True, text=True, timeout=10,
+""",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         if result.returncode == 0 and result.stdout.strip():
             data = json.loads(result.stdout.strip())
@@ -247,6 +271,7 @@ https.get({json.dumps(url)}, (res) => {{
 @dataclass
 class ResearchBrief:
     """Result of the research phase."""
+
     content: str
     sources: list[str] = field(default_factory=list)
     search_queries: list[str] = field(default_factory=list)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import enum
-import re
 from dataclasses import dataclass
 
 from .models import Job
@@ -11,10 +10,11 @@ from .models import Job
 
 class JobTier(enum.Enum):
     """Complexity tiers for marketplace jobs."""
-    TEXT = "text"           # Guides, docs, tutorials, articles
-    PACKAGE = "package"     # npm/pypi packages, MCP servers, libraries
-    SERVICE = "service"     # Bots, extensions, deployed services
-    SYSTEM = "system"       # Multi-component, orchestration, agents
+
+    TEXT = "text"  # Guides, docs, tutorials, articles
+    PACKAGE = "package"  # npm/pypi packages, MCP servers, libraries
+    SERVICE = "service"  # Bots, extensions, deployed services
+    SYSTEM = "system"  # Multi-component, orchestration, agents
 
 
 # Agent name → matches .claude/agents/<name>.md
@@ -29,11 +29,12 @@ TIER_AGENTS = {
 @dataclass
 class RoutingResult:
     """Result of job classification."""
+
     tier: JobTier
     agent: str
     template: str | None  # Template directory name, if any
-    language: str          # Primary language hint
-    reason: str            # Why this tier was chosen
+    language: str  # Primary language hint
+    reason: str  # Why this tier was chosen
 
 
 def _lower_set(items: list[str] | None) -> set[str]:
@@ -64,19 +65,32 @@ def classify(job: Job) -> RoutingResult:
         language = "solidity"
 
     # --- Tier 4: System (check first — most specific) ---
-    if _has_any(combined, ["multi-agent", "swarm", "orchestrat", "agent-to-agent",
-                            "multi-marketplace", "cross-platform agent"]):
+    if _has_any(
+        combined,
+        [
+            "multi-agent",
+            "swarm",
+            "orchestrat",
+            "agent-to-agent",
+            "multi-marketplace",
+            "cross-platform agent",
+        ],
+    ):
         return RoutingResult(
-            tier=JobTier.SYSTEM, agent=TIER_AGENTS[JobTier.SYSTEM],
-            template=None, language=language,
+            tier=JobTier.SYSTEM,
+            agent=TIER_AGENTS[JobTier.SYSTEM],
+            template=None,
+            language=language,
             reason="Multi-agent or orchestration keywords detected",
         )
 
     # --- Tier 3: Service (bots, extensions, deployed things) ---
-    is_bot = _has_any(combined, ["discord bot", "telegram bot", "slack bot",
-                                  "twitter bot", "chatbot"])
-    is_extension = _has_any(combined, ["chrome extension", "vscode extension",
-                                        "browser extension", "vs code"])
+    is_bot = _has_any(
+        combined, ["discord bot", "telegram bot", "slack bot", "twitter bot", "chatbot"]
+    )
+    is_extension = _has_any(
+        combined, ["chrome extension", "vscode extension", "browser extension", "vs code"]
+    )
     is_deployed = (
         _has_any(combined, ["deploy", "hosting", "live server", "production"])
         and not _has_any(combined, ["guide", "tutorial", "write", "document"])
@@ -84,8 +98,10 @@ def classify(job: Job) -> RoutingResult:
     )
     if is_bot or is_extension or is_deployed:
         return RoutingResult(
-            tier=JobTier.SERVICE, agent=TIER_AGENTS[JobTier.SERVICE],
-            template=None, language=language,
+            tier=JobTier.SERVICE,
+            agent=TIER_AGENTS[JobTier.SERVICE],
+            template=None,
+            language=language,
             reason=f"Service: bot={is_bot}, extension={is_extension}, deploy={is_deployed}",
         )
 
@@ -95,10 +111,8 @@ def classify(job: Job) -> RoutingResult:
     is_mcp = ("mcp" in tags or "mcp" in combined) and _has_any(combined, ["server", "tool"])
     is_lib = _has_any(combined, ["library", "sdk", "module", "framework"])
     is_github_action = "github-action" in tags or "github action" in combined
-    is_code_build = (
-        _has_any(title, ["build", "create", "develop", "implement"])
-        and not _has_any(combined, ["guide", "tutorial", "write about", "article", "blog",
-                                     "course", "documentation"])
+    is_code_build = _has_any(title, ["build", "create", "develop", "implement"]) and not _has_any(
+        combined, ["guide", "tutorial", "write about", "article", "blog", "course", "documentation"]
     )
 
     template = None
@@ -111,15 +125,19 @@ def classify(job: Job) -> RoutingResult:
 
     if is_npm or is_pypi or is_mcp or is_lib or is_github_action or is_code_build:
         return RoutingResult(
-            tier=JobTier.PACKAGE, agent=TIER_AGENTS[JobTier.PACKAGE],
-            template=template, language=language,
+            tier=JobTier.PACKAGE,
+            agent=TIER_AGENTS[JobTier.PACKAGE],
+            template=template,
+            language=language,
             reason=f"Package: npm={is_npm}, pypi={is_pypi}, mcp={is_mcp}, "
-                   f"lib={is_lib}, action={is_github_action}, build={is_code_build}",
+            f"lib={is_lib}, action={is_github_action}, build={is_code_build}",
         )
 
     # --- Tier 1: Text (default fallback) ---
     return RoutingResult(
-        tier=JobTier.TEXT, agent=TIER_AGENTS[JobTier.TEXT],
-        template=None, language=language,
+        tier=JobTier.TEXT,
+        agent=TIER_AGENTS[JobTier.TEXT],
+        template=None,
+        language=language,
         reason="No code/package/service signals — defaulting to text",
     )

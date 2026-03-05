@@ -24,6 +24,7 @@ BUILD_TIMEOUT = 120  # seconds
 @dataclass
 class DeployResult:
     """Result from build verification."""
+
     success: bool
     method: str  # "npm-build", "python-build", "docker-build", "entry-check", "skip"
     output: str
@@ -35,8 +36,12 @@ class DeployResult:
 
 def _run_cmd(cmd: str, cwd: str, timeout: int = BUILD_TIMEOUT) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd, shell=True, cwd=cwd,
-        capture_output=True, text=True, timeout=timeout,
+        cmd,
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
 
 
@@ -59,8 +64,11 @@ def _has_script(workspace: str, script_name: str) -> bool:
 def _verify_npm_build(workspace: str) -> DeployResult:
     """Verify npm project builds."""
     if not _tool_available("npm"):
-        return DeployResult(success=True, method="npm-build",
-                            output="npm not available — skipped build verification")
+        return DeployResult(
+            success=True,
+            method="npm-build",
+            output="npm not available — skipped build verification",
+        )
 
     # Install deps first (if not already installed)
     node_modules = os.path.join(workspace, "node_modules")
@@ -68,18 +76,20 @@ def _verify_npm_build(workspace: str) -> DeployResult:
         install = _run_cmd("npm install --ignore-scripts 2>&1", workspace)
         if install.returncode != 0:
             return DeployResult(
-                success=False, method="npm-build",
-                output=f"npm install failed:\n{install.stdout[-1000:]}")
+                success=False,
+                method="npm-build",
+                output=f"npm install failed:\n{install.stdout[-1000:]}",
+            )
 
     # Try build if script exists
     if _has_script(workspace, "build"):
         result = _run_cmd("npm run build 2>&1", workspace)
         output = result.stdout[-1500:]
         if result.returncode != 0:
-            return DeployResult(success=False, method="npm-build",
-                                output=f"npm run build failed:\n{output}")
-        return DeployResult(success=True, method="npm-build",
-                            output=f"Build succeeded:\n{output}")
+            return DeployResult(
+                success=False, method="npm-build", output=f"npm run build failed:\n{output}"
+            )
+        return DeployResult(success=True, method="npm-build", output=f"Build succeeded:\n{output}")
 
     # No build script — check that main entry exists
     pkg_path = os.path.join(workspace, "package.json")
@@ -88,20 +98,25 @@ def _verify_npm_build(workspace: str) -> DeployResult:
             pkg = json.loads(Path(pkg_path).read_text())
             main = pkg.get("main", "index.js")
             if os.path.exists(os.path.join(workspace, main)):
-                return DeployResult(success=True, method="entry-check",
-                                    output=f"Entry point '{main}' exists (no build script)")
+                return DeployResult(
+                    success=True,
+                    method="entry-check",
+                    output=f"Entry point '{main}' exists (no build script)",
+                )
         except (json.JSONDecodeError, OSError):
             pass
 
-    return DeployResult(success=True, method="entry-check",
-                        output="No build script — skipped")
+    return DeployResult(success=True, method="entry-check", output="No build script — skipped")
 
 
 def _verify_python_build(workspace: str) -> DeployResult:
     """Verify Python project builds."""
     if not _tool_available("python3") and not _tool_available("python"):
-        return DeployResult(success=True, method="python-build",
-                            output="python not available — skipped build verification")
+        return DeployResult(
+            success=True,
+            method="python-build",
+            output="python not available — skipped build verification",
+        )
 
     python = "python3" if _tool_available("python3") else "python"
 
@@ -109,8 +124,9 @@ def _verify_python_build(workspace: str) -> DeployResult:
     result = _run_cmd(f"{python} -m build 2>&1", workspace)
     if result.returncode == 0:
         output = result.stdout[-1000:]
-        return DeployResult(success=True, method="python-build",
-                            output=f"Build succeeded:\n{output}")
+        return DeployResult(
+            success=True, method="python-build", output=f"Build succeeded:\n{output}"
+        )
 
     # If `build` module not available, check basic import
     pyproject = os.path.join(workspace, "pyproject.toml")
@@ -122,19 +138,19 @@ def _verify_python_build(workspace: str) -> DeployResult:
             init_files = list(Path(src_dir).rglob("__init__.py"))
             if init_files:
                 return DeployResult(
-                    success=True, method="entry-check",
-                    output=f"Package structure valid ({len(init_files)} __init__.py found)")
+                    success=True,
+                    method="entry-check",
+                    output=f"Package structure valid ({len(init_files)} __init__.py found)",
+                )
 
-    return DeployResult(success=True, method="entry-check",
-                        output="Basic structure check passed")
+    return DeployResult(success=True, method="entry-check", output="Basic structure check passed")
 
 
 def _verify_docker_build(workspace: str) -> DeployResult:
     """Verify Dockerfile builds (if docker/podman available)."""
     dockerfile = os.path.join(workspace, "Dockerfile")
     if not os.path.exists(dockerfile):
-        return DeployResult(success=True, method="skip",
-                            output="No Dockerfile — skipped")
+        return DeployResult(success=True, method="skip", output="No Dockerfile — skipped")
 
     # Prefer podman on Linux, docker otherwise
     tool = None
@@ -144,8 +160,9 @@ def _verify_docker_build(workspace: str) -> DeployResult:
             break
 
     if not tool:
-        return DeployResult(success=True, method="skip",
-                            output="No docker/podman — skipped Dockerfile verification")
+        return DeployResult(
+            success=True, method="skip", output="No docker/podman — skipped Dockerfile verification"
+        )
 
     tag = f"near-verify-{os.path.basename(workspace)[:12]}"
     result = _run_cmd(f"{tool} build -t {tag} . 2>&1", workspace, timeout=180)
@@ -155,10 +172,10 @@ def _verify_docker_build(workspace: str) -> DeployResult:
     _run_cmd(f"{tool} rmi {tag} 2>&1", workspace, timeout=30)
 
     if result.returncode != 0:
-        return DeployResult(success=False, method="docker-build",
-                            output=f"{tool} build failed:\n{output}")
-    return DeployResult(success=True, method="docker-build",
-                        output=f"{tool} build succeeded")
+        return DeployResult(
+            success=False, method="docker-build", output=f"{tool} build failed:\n{output}"
+        )
+    return DeployResult(success=True, method="docker-build", output=f"{tool} build succeeded")
 
 
 def verify_build(workspace: str, routing: RoutingResult) -> DeployResult:
@@ -168,8 +185,9 @@ def verify_build(workspace: str, routing: RoutingResult) -> DeployResult:
     Non-blocking: never crashes the pipeline.
     """
     if routing.tier == JobTier.TEXT:
-        return DeployResult(success=True, method="skip",
-                            output="Text tier — no build verification needed")
+        return DeployResult(
+            success=True, method="skip", output="Text tier — no build verification needed"
+        )
 
     try:
         pkg_json = os.path.join(workspace, "package.json")
@@ -190,8 +208,7 @@ def verify_build(workspace: str, routing: RoutingResult) -> DeployResult:
             results.append(_verify_docker_build(workspace))
 
         if not results:
-            return DeployResult(success=True, method="skip",
-                                output="No recognized build system")
+            return DeployResult(success=True, method="skip", output="No recognized build system")
 
         # Aggregate: fail if any critical step failed
         failures = [r for r in results if not r.success]
@@ -211,9 +228,7 @@ def verify_build(workspace: str, routing: RoutingResult) -> DeployResult:
         )
 
     except subprocess.TimeoutExpired:
-        return DeployResult(success=False, method="timeout",
-                            output="Build verification timed out")
+        return DeployResult(success=False, method="timeout", output="Build verification timed out")
     except Exception as e:
         log.warning(f"Build verification error (non-fatal): {e}")
-        return DeployResult(success=True, method="error",
-                            output=f"Verification error: {e}")
+        return DeployResult(success=True, method="error", output=f"Verification error: {e}")

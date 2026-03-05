@@ -7,8 +7,6 @@ to parse JSON from LLM responses that may contain markdown or reasoning.
 from __future__ import annotations
 
 import json
-import re
-
 
 _SENTINEL = object()
 

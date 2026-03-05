@@ -1,20 +1,17 @@
 """Tests for GitHub publisher module."""
 
 import os
+import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import subprocess
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from near_market_agent.github_publisher import (
-    _sanitize_repo_name,
-    _ensure_gitignore,
     _clean_workspace,
-    publish_workspace,
+    _ensure_gitignore,
+    _sanitize_repo_name,
     gh_available,
-    DEFAULT_GITIGNORE,
+    publish_workspace,
 )
 
 
@@ -126,14 +123,15 @@ class TestPublishWorkspace:
             mock_cmd.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
             publish_workspace(
-                d, "Test", "abc12345", org="test-org",
-                author_name="My Agent", author_email="me@example.com",
+                d,
+                "Test",
+                "abc12345",
+                org="test-org",
+                author_name="My Agent",
+                author_email="me@example.com",
             )
             # Check the commit command included custom author
-            commit_calls = [
-                c for c in mock_cmd.call_args_list
-                if "commit" in str(c)
-            ]
+            commit_calls = [c for c in mock_cmd.call_args_list if "commit" in str(c)]
             assert any("My Agent" in str(c) for c in commit_calls)
 
     @patch("near_market_agent.github_publisher._run_cmd")

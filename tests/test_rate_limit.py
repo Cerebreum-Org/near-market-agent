@@ -1,14 +1,16 @@
 """Tests for rate limit tracking and connection pooling."""
 
-import pytest
-import httpx
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
-from near_market_agent.market_client import (
-    MarketClient, MarketAPIError, RateLimitState, RequestMetrics,
-    MAX_CONNECTIONS, MAX_KEEPALIVE_CONNECTIONS,
-)
+import httpx
+import pytest
+
 from near_market_agent.config import Config
+from near_market_agent.market_client import (
+    MarketClient,
+    RateLimitState,
+    RequestMetrics,
+)
 
 
 @pytest.fixture

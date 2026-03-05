@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from near_market_agent.config import Config
 from near_market_agent.job_evaluator import JobEvaluator
@@ -85,7 +85,9 @@ class JobEvaluatorTests(unittest.TestCase):
 
         with patch("near_market_agent.job_evaluator.ClaudeCLI") as MockCLI:
             mock_claude = MockCLI.return_value
-            mock_claude.create_message.side_effect = RuntimeError("claude CLI failed (exit 1): error")
+            mock_claude.create_message.side_effect = RuntimeError(
+                "claude CLI failed (exit 1): error"
+            )
             evaluator = JobEvaluator(cfg)
             result = evaluator.evaluate_job(_job())
 
@@ -96,7 +98,12 @@ class JobEvaluatorTests(unittest.TestCase):
 
     def test_extract_text_joins_text_blocks(self) -> None:
         response = SimpleNamespace(
-            content=[SimpleNamespace(text="first"), SimpleNamespace(text="second"), SimpleNamespace(foo="x")]
+            content=[
+                SimpleNamespace(text="first"),
+                SimpleNamespace(text="second"),
+                SimpleNamespace(foo="x"),
+            ]
         )
         from near_market_agent import extract_llm_text
+
         self.assertEqual(extract_llm_text(response), "first\nsecond")

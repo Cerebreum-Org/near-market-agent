@@ -175,7 +175,7 @@ class AlignmentMonitor:
             if data and "requirements" in data:
                 self._requirements = [
                     Requirement(
-                        id=r.get("id", f"R{i+1}"),
+                        id=r.get("id", f"R{i + 1}"),
                         description=r.get("description", ""),
                         category=r.get("category", "core"),
                         priority=r.get("priority", "must"),

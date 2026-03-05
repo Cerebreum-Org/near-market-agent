@@ -5,23 +5,20 @@ Run with: uv run pytest tests/test_integration.py -v
 """
 
 import asyncio
-import glob
 import json
 import os
 import shutil
 import tempfile
 import time
-import pytest
-from collections import OrderedDict
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 from near_market_agent.config import Config, TierConfig
-from near_market_agent.models import Job, JobType, JobStatus, Bid, BidStatus
-from near_market_agent.market_client import MarketClient
 from near_market_agent.job_evaluator import JobEvaluator
-from near_market_agent.job_router import classify, JobTier
+from near_market_agent.job_router import JobTier, classify
 from near_market_agent.json_utils import extract_json
+from near_market_agent.market_client import MarketClient
+from near_market_agent.models import Job, JobStatus, JobType
 from near_market_agent.work_engine import WorkEngine, cleanup_stale_workspaces
 
 
@@ -38,7 +35,7 @@ def _make_job(**overrides) -> Job:
         "job_type": JobType.STANDARD,
         "status": JobStatus.OPEN,
         "bid_count": 2,
-        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
+        "expires_at": datetime.now(UTC) + timedelta(days=7),
     }
     defaults.update(overrides)
     return Job(**defaults)
@@ -114,7 +111,7 @@ class TestEvaluatorIntegration:
 
     def test_preflight_skips_expired_jobs(self):
         job = _make_job(
-            expires_at=datetime.now(timezone.utc) - timedelta(days=1),
+            expires_at=datetime.now(UTC) - timedelta(days=1),
         )
         evaluator = JobEvaluator(Config(market_api_key="test"))
         result = evaluator.evaluate_job(job)
@@ -146,14 +143,17 @@ class TestEvaluatorIntegration:
 
     def test_preflight_skips_disabled_tier(self):
         from near_market_agent.config import TierConfig
+
         job = _make_job(
             title="Multi-agent orchestration system",
             description="Build a multi-agent system...",
         )
-        evaluator = JobEvaluator(Config(
-            market_api_key="test",
-            tiers=TierConfig(disabled_tiers=["system"]),
-        ))
+        evaluator = JobEvaluator(
+            Config(
+                market_api_key="test",
+                tiers=TierConfig(disabled_tiers=["system"]),
+            )
+        )
         result = evaluator.evaluate_job(job)
         assert not result.should_bid
         assert "disabled" in result.reasoning.lower()
@@ -187,7 +187,9 @@ class TestJsonExtraction:
         assert result["score"] == 0.9
 
     def test_json_with_surrounding_text(self):
-        text = 'After careful review, {"score": 0.7, "pass": true, "feedback": "ok"} is my assessment.'
+        text = (
+            'After careful review, {"score": 0.7, "pass": true, "feedback": "ok"} is my assessment.'
+        )
         result = extract_json(text)
         assert result["score"] == 0.7
 
@@ -226,6 +228,7 @@ class TestWorkspaceSetup:
 
         # Cleanup
         import shutil
+
         shutil.rmtree(workspace, ignore_errors=True)
 
     def test_workspace_has_near_reference(self):
@@ -237,10 +240,13 @@ class TestWorkspaceSetup:
 
         near_ref = os.path.join(workspace, "NEAR-REFERENCE.md")
         # May or may not exist depending on knowledge/ directory
-        if os.path.exists(os.path.join(os.path.dirname(__file__), "..", "knowledge", "near-reference.md")):
+        if os.path.exists(
+            os.path.join(os.path.dirname(__file__), "..", "knowledge", "near-reference.md")
+        ):
             assert os.path.exists(near_ref)
 
         import shutil
+
         shutil.rmtree(workspace, ignore_errors=True)
 
 
@@ -256,7 +262,7 @@ class TestSanitizationIntegration:
         evaluator = JobEvaluator(Config(market_api_key="test"))
         # Should hit preflight filters first (low budget, missing title)
         # or if it passes, the sanitization should clean the text
-        result = evaluator._preflight_filter(job)
+        evaluator._preflight_filter(job)
         # Even if preflight passes, the actual LLM call would use sanitized text
 
     def test_workspace_sanitizes_description(self):
@@ -274,6 +280,7 @@ class TestSanitizationIntegration:
         assert "Real task here" in job_md
 
         import shutil
+
         shutil.rmtree(workspace, ignore_errors=True)
 
 
@@ -301,13 +308,14 @@ class TestMarketClientIntegration:
         assert client.metrics.avg_latency_ms == 0.0
 
     def test_close(self):
-        import asyncio
+
         async def _test():
             config = Config(market_api_key="test-key")
             client = MarketClient(config)
             client._ensure_client()
             await client.close()
             assert client._client.is_closed
+
         asyncio.run(_test())
 
 
@@ -334,11 +342,14 @@ class TestTierConfig:
 
     def test_config_from_env_tiers(self):
         """TierConfig loads from environment variables."""
-        with patch.dict(os.environ, {
-            "TIER_TEXT_TIMEOUT": "120",
-            "TIER_PACKAGE_MODEL": "claude-opus",
-            "DISABLED_TIERS": "system,service",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "TIER_TEXT_TIMEOUT": "120",
+                "TIER_PACKAGE_MODEL": "claude-opus",
+                "DISABLED_TIERS": "system,service",
+            },
+        ):
             config = Config.from_env()
             assert config.tiers.text_timeout == 120
             assert config.tiers.package_model == "claude-opus"
@@ -365,7 +376,7 @@ class TestStaleWorkspaceCleanup:
         recent_dir = tempfile.mkdtemp(prefix="near_work_package_", dir=tmp)
         # mtime is now — should not be cleaned
 
-        cleaned = cleanup_stale_workspaces(max_age_hours=24)
+        cleanup_stale_workspaces(max_age_hours=24)
         assert os.path.exists(recent_dir)
 
         # Cleanup our test dir
@@ -400,7 +411,8 @@ class TestWorkResultSerialization:
     """Test WorkResult can be serialized to dict."""
 
     def test_to_dict(self):
-        from near_market_agent.work_engine import WorkResult, ReviewResult
+        from near_market_agent.work_engine import ReviewResult, WorkResult
+
         result = WorkResult(
             job_id="j1",
             content="test content",
@@ -436,10 +448,15 @@ class TestEvaluatorSkipPreflight:
     def test_skip_preflight_reaches_llm(self, MockCLI):
         """With skip_preflight=True, low-budget job reaches LLM instead of being filtered."""
         mock_claude = MockCLI.return_value
-        mock_claude.create_message.return_value = json.dumps({
-            "score": 0.8, "should_bid": True, "reasoning": "looks good",
-            "category": "code", "proposal_draft": "I can do this",
-        })
+        mock_claude.create_message.return_value = json.dumps(
+            {
+                "score": 0.8,
+                "should_bid": True,
+                "reasoning": "looks good",
+                "category": "code",
+                "proposal_draft": "I can do this",
+            }
+        )
 
         job = _make_job(budget_amount="0.1")
         evaluator = JobEvaluator(Config(market_api_key="test", min_budget_near=5.0))
